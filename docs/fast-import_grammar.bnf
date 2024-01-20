@@ -1,0 +1,80 @@
+command ::=
+    | blob
+    | commit
+    | "tag " tag
+    | "reset " reset
+    | "ls " ls
+    | "cat-blob " cat_blob
+    | "get-mark " get_mark
+    | "checkpoint" SEP
+    | "done" SEP
+    | "alias" SEP alias
+    | "progress " progress
+    | "feature " feature
+    | "option git " option_git
+    | "option " NOT_LF* SEP
+
+blob ::=
+    "blob" SEP
+    mark?
+    original_oid?
+    data_large
+
+commit ::=
+    "commit " branch SEP
+    mark?
+    original_oid?
+    ("author" (" " name)? " <" email "> " date SEP)?
+    "committer" (" " name)? " <" email "> " date SEP
+    ("encoding " NOT_LF* SEP)?
+    data_small
+    ("from " objectish)?
+    …
+objectish ::= branch | mark_ref
+
+branch ::= NOT_LF*
+# Empty name and email are seemingly allowed.
+name ::= [^<>\n]*
+email ::= [^<>\n]*
+
+# The mark is 0 when this line is omitted.
+mark ::= "mark :" integer_junk SEP
+mark_ref ::= ":" integer SEP
+original_oid ::= "original-oid " NOT_LF* SEP
+
+# Supports files larger than the configured --max-pack-size, when using the the
+# length-prefixed syntax.
+data_large ::= data
+# Does not support large files.
+data_small ::= data
+data ::= "data " (data_heredoc | data_length) COMMENTS
+# Consumes lines until the terminator string is found.
+# BUG: The heredoc can be empty.
+data_heredoc ::=
+    "<<" (?<terminator> NOT_LF*) LF
+    (NOT_LF* LF)*?
+    \k<terminator> LF
+# Reads as many bytes as specified.
+data_length ::=
+    integer_junk LF
+    .{length} LF?
+
+# Time zone must be in the range -1400 to 1400, inclusive.
+date if --date-format=raw ::= date_raw
+date if --date-format=raw-permissive ::= date_raw
+date if --date-format=rfc2822 ::= … # See parse_date in date.c
+date if --date-format=now ::= "now"
+# BUG: Allows extraneous sign in time zone
+date_raw ::= integer " " [+-] [0-9]+
+
+# Grammar of strtoumax, which is strtoul or strtoull depending on available bit
+# width, with radix 10.
+integer ::= [+-]? [0-9]
+# BUG: Uses of strtoumax do not consume the whole line, potentially leaving
+# trailing junk.
+integer_junk ::= integer? [^0-9]*
+
+SEP ::= LF COMMENTS
+COMMENTS ::= ("#" NOT_LF* (LF | EOF))*
+LF ::= "\n"
+NOT_LF ::= [^\n]
