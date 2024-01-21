@@ -1,0 +1,12 @@
+[package]
+name = "fast-export"
+version = "0.1.0"
+authors = ["Thalia Archibald <thalia@archibald.dev>"]
+edition = "2021"
+description = "Library for generating git fast-export streams, to export data as a repository"
+license = "MPL-2.0"
+keywords = ["git", "fast-export", "fast-import"]
+categories = ["development-tools"]
+
+[dependencies]
+thiserror = "1.0.56"

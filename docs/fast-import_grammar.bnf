@@ -47,17 +47,17 @@ original_oid ::= "original-oid " NOT_LF* SEP
 data_large ::= data
 # Does not support large files.
 data_small ::= data
-data ::= "data " (data_heredoc | data_length) COMMENTS
+data ::= "data " (data_counted | data_delimited) COMMENTS
+# Reads as many bytes as specified.
+data_counted ::=
+    integer_junk LF
+    .{length} LF?
 # Consumes lines until the terminator string is found.
 # BUG: The heredoc can be empty.
-data_heredoc ::=
+data_delimited ::=
     "<<" (?<terminator> NOT_LF*) LF
     (NOT_LF* LF)*?
     \k<terminator> LF
-# Reads as many bytes as specified.
-data_length ::=
-    integer_junk LF
-    .{length} LF?
 
 # Time zone must be in the range -1400 to 1400, inclusive.
 date if --date-format=raw ::= date_raw
