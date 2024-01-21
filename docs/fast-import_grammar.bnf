@@ -3,8 +3,8 @@ command ::=
     | commit
     | "tag " tag
     | "reset " reset
-    | "ls " ls
-    | "cat-blob " cat_blob
+    | ls
+    | cat_blob
     | "get-mark " get_mark
     | "checkpoint" SEP
     | "done" SEP
@@ -28,18 +28,44 @@ commit ::=
     "committer" (" " name)? " <" email "> " date SEP
     ("encoding " NOT_LF* SEP)?
     data_small
-    ("from " objectish)?
-    …
+    ("from " objectish SEP)?
+    ("merge " objectish SEP)*
+    (file_modify | file_delete | file_rename | file_copy | note_modify |
+        file_deleteall | ls | cat_blob)*
+    LF?
 objectish ::= branch | mark_ref
-
+# BUG: Empty branch is seemingly allowed.
 branch ::= NOT_LF*
 # Empty name and email are seemingly allowed.
 name ::= [^<>\n]*
 email ::= [^<>\n]*
+file_modify ::=
+    "M " mode " " (file_modify_external | file_modify_inline)
+file_delete ::=
+    "D " …
+file_rename ::=
+    "R " …
+file_copy ::=
+    "C " …
+note_modify ::=
+    "N " …
+file_deleteall ::=
+    "deleteall " …
+mode ::= [0-7]+
+file_modify_external ::=
+    mark_ref " " …
+file_modify_inline ::=
+    "inline " …
+
+ls ::=
+    "ls " …
+
+cat_blob ::=
+    "cat-blob " …
 
 # The mark is 0 when this line is omitted.
-mark ::= "mark :" int_junk SEP
-mark_ref ::= ":" int SEP
+mark ::= "mark :" int SEP
+mark_ref ::= ":" int
 original_oid ::= "original-oid " NOT_LF* SEP
 
 # Supports files larger than the configured --max-pack-size, when using the the
@@ -50,7 +76,7 @@ data_small ::= data
 data ::= "data " (data_counted | data_delimited) COMMENTS
 # Reads as many bytes as specified.
 data_counted ::=
-    int_junk LF
+    int LF
     .{length} LF?
 # Consumes lines until the terminator string is found.
 # BUG: The heredoc can be empty.
@@ -78,13 +104,12 @@ date if --date-format=now ::= "now"
 # BUG: Allows extraneous sign in time zone
 date_raw ::= int " " [+-] [0-9]+
 
+# BUG: Many uses of strtoumax do not consume the whole line, potentially leaving
+# trailing junk.
 int ::= [+-]? [0-9]+
 uint ::= "+"? [0-9]+
 unit_factor ::= [kKmMgG]?
 file_size ::= uint unit_factor
-# BUG: Many uses of strtoumax do not consume the whole line, potentially leaving
-# trailing junk.
-int_junk ::= int? [^0-9]*
 
 SEP ::= LF COMMENTS
 COMMENTS ::= ("#" NOT_LF* (LF | EOF))*
