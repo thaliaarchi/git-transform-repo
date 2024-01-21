@@ -38,8 +38,8 @@ name ::= [^<>\n]*
 email ::= [^<>\n]*
 
 # The mark is 0 when this line is omitted.
-mark ::= "mark :" integer_junk SEP
-mark_ref ::= ":" integer SEP
+mark ::= "mark :" int_junk SEP
+mark_ref ::= ":" int SEP
 original_oid ::= "original-oid " NOT_LF* SEP
 
 # Supports files larger than the configured --max-pack-size, when using the the
@@ -50,7 +50,7 @@ data_small ::= data
 data ::= "data " (data_counted | data_delimited) COMMENTS
 # Reads as many bytes as specified.
 data_counted ::=
-    integer_junk LF
+    int_junk LF
     .{length} LF?
 # Consumes lines until the terminator string is found.
 # BUG: The heredoc can be empty.
@@ -59,20 +59,32 @@ data_delimited ::=
     (NOT_LF* LF)*?
     \k<terminator> LF
 
+option_git ::=
+    | "--max-pack-size=" file_size
+    | "--big-file-threshold=" file_size
+    | "--depth=" uint
+    | "--active-branches=" uint
+    | "--export-pack-edges=" filename
+    | "--quiet"
+    | "--stats"
+    | "--allow-unsafe-features"
+filename ::= NOT_LF*
+
 # Time zone must be in the range -1400 to 1400, inclusive.
 date if --date-format=raw ::= date_raw
 date if --date-format=raw-permissive ::= date_raw
 date if --date-format=rfc2822 ::= … # See parse_date in date.c
 date if --date-format=now ::= "now"
 # BUG: Allows extraneous sign in time zone
-date_raw ::= integer " " [+-] [0-9]+
+date_raw ::= int " " [+-] [0-9]+
 
-# Grammar of strtoumax, which is strtoul or strtoull depending on available bit
-# width, with radix 10.
-integer ::= [+-]? [0-9]
-# BUG: Uses of strtoumax do not consume the whole line, potentially leaving
+int ::= [+-]? [0-9]+
+uint ::= "+"? [0-9]+
+unit_factor ::= [kKmMgG]?
+file_size ::= uint unit_factor
+# BUG: Many uses of strtoumax do not consume the whole line, potentially leaving
 # trailing junk.
-integer_junk ::= integer? [^0-9]*
+int_junk ::= int? [^0-9]*
 
 SEP ::= LF COMMENTS
 COMMENTS ::= ("#" NOT_LF* (LF | EOF))*

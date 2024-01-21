@@ -58,20 +58,31 @@ pub struct Progress;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Feature;
 
+// Signs (`+`/none) are not 1-to-1.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OptionGit;
+pub enum OptionGit {
+    MaxPackSize(FileSize),
+    BigFileThreshold(FileSize),
+    Depth(u32),
+    ActiveBranches(u32),
+    ExportPackEdges(InlineString),
+    Quiet,
+    Stats,
+    AllowUnsafeFeatures,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OptionOther;
+pub struct OptionOther(pub InlineString);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(transparent)]
 pub struct Mark {
     pub mark: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OriginalOid {
-    pub oid: BString,
+    pub oid: InlineString,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,7 +127,7 @@ impl CountedData {
 
 impl DelimitedData {
     #[inline]
-    pub fn new<T: Into<Vec<u8>>>(data: T, delim: BString) -> Result<Self, DelimitedError> {
+    pub fn new<T: Into<Vec<u8>>>(data: T, delim: InlineString) -> Result<Self, DelimitedError> {
         DelimitedData::_new(data.into().into_boxed_slice(), delim.bytes)
     }
 
@@ -169,34 +180,49 @@ impl From<DelimitedData> for Data {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileSize {
+    pub value: u32,
+    pub unit: UnitFactor,
+}
+
+// Case is not 1-to-1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnitFactor {
+    B,
+    K,
+    M,
+    G,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct BString {
+pub struct InlineString {
     bytes: Box<[u8]>,
 }
 
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum BStringError {
-    #[error("byte string contains NUL ('\\0')")]
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum InlineStringError {
+    #[error("inline string contains NUL ('\\0')")]
     ContainsNul,
-    #[error("byte string contains LF ('\\n')")]
+    #[error("inline string contains LF ('\\n')")]
     ContainsLf,
 }
 
-impl BString {
+impl InlineString {
     #[inline]
-    pub fn new<T: Into<Vec<u8>>>(bytes: T) -> Result<Self, BStringError> {
-        BString::_new(bytes.into().into_boxed_slice())
+    pub fn new<T: Into<Vec<u8>>>(bytes: T) -> Result<Self, InlineStringError> {
+        InlineString::_new(bytes.into().into_boxed_slice())
     }
 
-    fn _new(bytes: Box<[u8]>) -> Result<Self, BStringError> {
+    fn _new(bytes: Box<[u8]>) -> Result<Self, InlineStringError> {
         if let Some(&b) = bytes.iter().find(|&&b| b == b'\0' || b == b'\n') {
             Err(if b == b'\0' {
-                BStringError::ContainsNul
+                InlineStringError::ContainsNul
             } else {
-                BStringError::ContainsLf
+                InlineStringError::ContainsLf
             })
         } else {
-            Ok(BString { bytes })
+            Ok(InlineString { bytes })
         }
     }
 
@@ -213,25 +239,25 @@ impl BString {
     }
 }
 
-impl TryFrom<Vec<u8>> for BString {
-    type Error = BStringError;
+impl TryFrom<Vec<u8>> for InlineString {
+    type Error = InlineStringError;
 
     #[inline]
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-        BString::new(bytes)
+        InlineString::new(bytes)
     }
 }
 
-impl PartialEq<[u8]> for BString {
+impl PartialEq<[u8]> for InlineString {
     #[inline]
     fn eq(&self, other: &[u8]) -> bool {
         self.as_bytes() == other
     }
 }
 
-impl PartialEq<BString> for [u8] {
+impl PartialEq<InlineString> for [u8] {
     #[inline]
-    fn eq(&self, other: &BString) -> bool {
+    fn eq(&self, other: &InlineString) -> bool {
         self == other.as_bytes()
     }
 }

@@ -1,7 +1,8 @@
 use std::io::{self, Write};
 
 use crate::{
-    BString, Blob, Commented, Comments, CountedData, Data, DelimitedData, Mark, OriginalOid,
+    Blob, Commented, Comments, CountedData, Data, DelimitedData, FileSize, InlineString, Mark,
+    OptionGit, OptionOther, OriginalOid, UnitFactor,
 };
 
 pub trait Pretty {
@@ -14,6 +15,41 @@ impl Pretty for Blob {
         self.mark.pretty(w)?;
         self.original_oid.pretty(w)?;
         self.data.pretty(w)
+    }
+}
+
+impl Pretty for OptionGit {
+    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(b"option git ")?;
+        match self {
+            OptionGit::MaxPackSize(n) => {
+                w.write_all(b"--max-pack-size=")?;
+                n.pretty(w)?;
+                w.write_all(b"\n")
+            }
+            OptionGit::BigFileThreshold(n) => {
+                w.write_all(b"--big-file-threshold=")?;
+                n.pretty(w)?;
+                w.write_all(b"\n")
+            }
+            OptionGit::Depth(n) => write!(w, "--depth={n}\n"),
+            OptionGit::ActiveBranches(n) => write!(w, "--active-branches={n}\n"),
+            OptionGit::ExportPackEdges(file) => {
+                write!(w, "--export-pack-edges=")?;
+                file.pretty(w)?;
+                w.write_all(b"\n")
+            }
+            OptionGit::Quiet => w.write_all(b"--quiet\n"),
+            OptionGit::Stats => w.write_all(b"--stats\n"),
+            OptionGit::AllowUnsafeFeatures => w.write_all(b"--allow-unsafe-features\n"),
+        }
+    }
+}
+
+impl Pretty for OptionOther {
+    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        w.write_all(b"option ")?;
+        self.0.pretty(w)
     }
 }
 
@@ -66,7 +102,19 @@ impl Pretty for DelimitedData {
     }
 }
 
-impl Pretty for BString {
+impl Pretty for FileSize {
+    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write!(w, "{}", self.value)?;
+        match self.unit {
+            UnitFactor::B => Ok(()),
+            UnitFactor::K => w.write_all(b"k"),
+            UnitFactor::M => w.write_all(b"m"),
+            UnitFactor::G => w.write_all(b"g"),
+        }
+    }
+}
+
+impl Pretty for InlineString {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(self.as_bytes())
     }
@@ -123,12 +171,25 @@ mod tests {
     fn delimited_data() {
         // Empty delimiter is allowed by git fast-import:
         // assert_eq!(
-        //     pretty(DelimitedData::new("Hello, world!\n", BString::new(b"").unwrap()).unwrap()),
+        //     pretty(DelimitedData::new("Hello, world!\n", InlineString::new(b"").unwrap()).unwrap()),
         //     b"data <<\nHello, world!\n\n\n",
         // );
         assert_eq!(
-            pretty(DelimitedData::new("Hello, world!\n", BString::new(b"EOF").unwrap()).unwrap()),
+            pretty(
+                DelimitedData::new("Hello, world!\n", InlineString::new(b"EOF").unwrap()).unwrap(),
+            ),
             b"data <<EOF\nHello, world!\nEOF\n\n",
+        );
+    }
+
+    #[test]
+    fn option_git() {}
+
+    #[test]
+    fn option_other() {
+        assert_eq!(
+            pretty(OptionOther(InlineString::new(b"vcs some config").unwrap())),
+            b"option vcs some config",
         );
     }
 
