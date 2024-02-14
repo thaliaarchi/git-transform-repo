@@ -55,3 +55,9 @@ blobs on all commits, due to the high performance cost. (It's discussed in
 However, this would be useful, for example, to automatically update license
 header years in any commit that touches a file that had not already been
 modified that year.
+
+## User parsing
+
+Is the pattern `(author|committer|tagger) (.*?) <(.*?)> (.*)\n` correct? Having
+the date be greedy, but never containing `<` or `>` is a waste, because it's
+useful for the name to contain `<` or `>`.
