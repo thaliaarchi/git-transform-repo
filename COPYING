@@ -1,0 +1,14 @@
+git-transform-repo is provided under either the MIT License or GPL 2.0-only
+(with linking exception), at your option.
+
+The usage of the MIT license probably makes git-transform-repo compatible with
+everything, but just in case, these files can also be used under whatever open
+source license[1] that git-filter-repo, git, or libgit2 use now or in the
+future. Currently, git-filter-repo uses MIT or the licenses of the other two[2],
+git uses GPL 2.0-only[3], and libgit2 uses GPL 2.0-only (with linking exception)
+[4].
+
+[1]: as defined by the Open Source Initiative (https://opensource.org/)
+[2]: https://github.com/newren/git-filter-repo/blob/main/COPYING
+[3]: https://git.kernel.org/pub/scm/git/git.git/tree/COPYING
+[4]: https://github.com/libgit2/libgit2/blob/main/COPYING
