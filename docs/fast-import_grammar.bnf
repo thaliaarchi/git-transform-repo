@@ -1,0 +1,117 @@
+command ::=
+    | blob
+    | commit
+    | "tag " tag
+    | "reset " reset
+    | ls
+    | cat_blob
+    | "get-mark " get_mark
+    | "checkpoint" SEP
+    | "done" SEP
+    | "alias" SEP alias
+    | "progress " progress
+    | "feature " feature
+    | "option git " option_git
+    | "option " NOT_LF* SEP
+
+blob ::=
+    "blob" SEP
+    mark?
+    original_oid?
+    data_large
+
+commit ::=
+    "commit " branch SEP
+    mark?
+    original_oid?
+    ("author" (" " name)? " <" email "> " date SEP)?
+    "committer" (" " name)? " <" email "> " date SEP
+    ("encoding " NOT_LF* SEP)?
+    data_small
+    ("from " objectish SEP)?
+    ("merge " objectish SEP)*
+    (file_modify | file_delete | file_rename | file_copy | note_modify |
+        file_deleteall | ls | cat_blob)*
+    LF?
+objectish ::= branch | mark_ref
+# BUG: Empty branch is seemingly allowed.
+branch ::= NOT_LF*
+# Empty name and email are seemingly allowed.
+name ::= [^<>\n]*
+email ::= [^<>\n]*
+file_modify ::=
+    "M " mode " " (file_modify_external | file_modify_inline)
+file_delete ::=
+    "D " …
+file_rename ::=
+    "R " …
+file_copy ::=
+    "C " …
+note_modify ::=
+    "N " …
+file_deleteall ::=
+    "deleteall " …
+mode ::= [0-7]+
+file_modify_external ::=
+    mark_ref " " …
+file_modify_inline ::=
+    "inline " …
+
+ls ::=
+    "ls " …
+
+cat_blob ::=
+    "cat-blob " …
+
+# The mark is 0 when this line is omitted.
+mark ::= "mark :" int SEP
+mark_ref ::= ":" int
+original_oid ::= "original-oid " NOT_LF* SEP
+
+# Supports files larger than the configured --max-pack-size, when using the the
+# length-prefixed syntax.
+data_large ::= data
+# Does not support large files.
+data_small ::= data
+data ::= "data " (data_counted | data_delimited) COMMENTS
+# Reads as many bytes as specified.
+data_counted ::=
+    int LF
+    .{length} LF?
+# Consumes lines until the terminator string is found.
+# BUG: The heredoc can be empty.
+data_delimited ::=
+    "<<" (?<terminator> NOT_LF*) LF
+    (NOT_LF* LF)*?
+    \k<terminator> LF
+
+option_git ::=
+    | "--max-pack-size=" file_size
+    | "--big-file-threshold=" file_size
+    | "--depth=" uint
+    | "--active-branches=" uint
+    | "--export-pack-edges=" filename
+    | "--quiet"
+    | "--stats"
+    | "--allow-unsafe-features"
+filename ::= NOT_LF*
+
+# Time zone must be in the range -1400 to 1400, inclusive.
+date if --date-format=raw ::= date_raw
+date if --date-format=raw-permissive ::= date_raw
+date if --date-format=rfc2822 ::= … # See parse_date in date.c
+date if --date-format=now ::= "now"
+# BUG: Allows extraneous sign in time zone
+date_raw ::= int " " [+-] [0-9]+
+
+# BUG: Many uses of strtoumax do not consume the whole line, potentially leaving
+# trailing junk.
+int ::= [+-]? [0-9]+
+uint ::= "+"? [0-9]+
+unit_factor ::= [kKmMgG]?
+file_size ::= uint unit_factor
+
+SEP ::= LF COMMENTS
+COMMENTS ::= ("#" NOT_LF* (LF | EOF))*
+LF ::= "\n"
+NOT_LF ::= [^\n]
