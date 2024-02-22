@@ -2,27 +2,27 @@ use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
-    Blob(Commented<Blob>),
-    Commit(Commented<Commit>),
-    Tag(Commented<Tag>),
-    Reset(Commented<Reset>),
-    Ls(Commented<Ls>),
-    CatBlob(Commented<CatBlob>),
-    GetMark(Commented<GetMark>),
-    Checkpoint(Commented<Checkpoint>),
-    Done(Commented<Done>),
-    Alias(Commented<Alias>),
-    Progress(Commented<Progress>),
-    Feature(Commented<Feature>),
-    OptionGit(Commented<OptionGit>),
-    OptionOther(Commented<OptionOther>),
+    Blob(Blob),
+    Commit(Commit),
+    Tag(Tag),
+    Reset(Reset),
+    Ls(Ls),
+    CatBlob(CatBlob),
+    GetMark(GetMark),
+    Checkpoint(Checkpoint),
+    Done(Done),
+    Alias(Alias),
+    Progress(Progress),
+    Feature(Feature),
+    OptionGit(OptionGit),
+    OptionOther(OptionOther),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Blob {
-    pub mark: Option<Commented<Mark>>,
-    pub original_oid: Option<Commented<OriginalOid>>,
-    pub data: Commented<Data>,
+    pub mark: Option<Mark>,
+    pub original_oid: Option<OriginalOid>,
+    pub data: Data,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,7 +58,6 @@ pub struct Progress;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Feature;
 
-// Signs (`+`/none) are not 1-to-1.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionGit {
     MaxPackSize(FileSize),
@@ -186,7 +185,6 @@ pub struct FileSize {
     pub unit: UnitFactor,
 }
 
-// Case is not 1-to-1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitFactor {
     B,
@@ -259,63 +257,5 @@ impl PartialEq<InlineString> for [u8] {
     #[inline]
     fn eq(&self, other: &InlineString) -> bool {
         self == other.as_bytes()
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Comments {
-    text: Box<[u8]>,
-}
-
-impl Comments {
-    #[inline]
-    #[must_use]
-    pub fn new<T: Into<Vec<u8>>>(text: T) -> Self {
-        Comments {
-            text: text.into().into_boxed_slice(),
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn text(&self) -> &[u8] {
-        &self.text
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Commented<T> {
-    pub comments: Comments,
-    pub value: T,
-}
-
-impl<T> Commented<T> {
-    #[inline]
-    #[must_use]
-    pub fn new(comments: Comments, value: T) -> Self {
-        Commented { comments, value }
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn wrap(value: T) -> Self {
-        Commented::new(Comments::default(), value)
-    }
-}
-
-impl<T> From<T> for Commented<T> {
-    #[inline]
-    fn from(value: T) -> Self {
-        Commented::wrap(value)
-    }
-}
-
-impl<T: Default> Default for Commented<T> {
-    #[inline]
-    fn default() -> Self {
-        Commented {
-            comments: Comments::default(),
-            value: T::default(),
-        }
     }
 }

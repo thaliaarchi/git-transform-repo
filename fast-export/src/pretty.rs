@@ -1,8 +1,8 @@
 use std::io::{self, Write};
 
 use crate::{
-    Blob, Commented, Comments, CountedData, Data, DelimitedData, FileSize, InlineString, Mark,
-    OptionGit, OptionOther, OriginalOid, UnitFactor,
+    Blob, CountedData, Data, DelimitedData, FileSize, InlineString, Mark, OptionGit, OptionOther,
+    OriginalOid, UnitFactor,
 };
 
 pub trait Pretty {
@@ -20,6 +20,7 @@ impl Pretty for Blob {
 
 impl Pretty for OptionGit {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        // Positive sign and leading zeros are not preserved from the source.
         w.write_all(b"option git ")?;
         match self {
             OptionGit::MaxPackSize(n) => {
@@ -104,6 +105,7 @@ impl Pretty for DelimitedData {
 
 impl Pretty for FileSize {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        // Case is not preserved from the source.
         write!(w, "{}", self.value)?;
         match self.unit {
             UnitFactor::B => Ok(()),
@@ -117,26 +119,6 @@ impl Pretty for FileSize {
 impl Pretty for InlineString {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(self.as_bytes())
-    }
-}
-
-impl Pretty for Comments {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        for line in self.text().split_inclusive(|&b| b == b'\n') {
-            w.write_all(b"#")?;
-            w.write_all(line)?;
-        }
-        if self.text().last().is_some_and(|&b| b != b'\n') {
-            w.write_all(b"\n")?;
-        }
-        Ok(())
-    }
-}
-
-impl<T: Pretty> Pretty for Commented<T> {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.comments.pretty(w)?;
-        self.value.pretty(w)
     }
 }
 
@@ -191,14 +173,5 @@ mod tests {
             pretty(OptionOther(InlineString::new(b"vcs some config").unwrap())),
             b"option vcs some config",
         );
-    }
-
-    #[test]
-    fn comments() {
-        assert_eq!(pretty(Comments::new(b"")), b"");
-        assert_eq!(pretty(Comments::new(b"\n")), b"#\n");
-        assert_eq!(pretty(Comments::new(b"\n\n")), b"#\n#\n");
-        assert_eq!(pretty(Comments::new(b"a\nb")), b"#a\n#b\n");
-        assert_eq!(pretty(Comments::new(b"a\nb\n")), b"#a\n#b\n");
     }
 }
