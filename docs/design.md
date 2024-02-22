@@ -1,8 +1,7 @@
-# git-transform-repo
+# git-transform-repo design ideas
 
-Ideas for a git-filter-repo successor for advanced repo transformations,
-tentatively called git-transform-repo. It aims for making iterative refinement
-of repo transformations easier.
+Ideas for a git-filter-repo successor for advanced repo transformations. It aims
+to make iterative refinement of repo transformations easier.
 
 ## Input repo
 
@@ -55,14 +54,27 @@ I usually use filter-repo in an iterative process, refining the resulting repo,
 until I am satisfied. If histories could be compared, disregarding commit hashes
 when not relevant, the process would be much easier.
 
-## DSL
+Diffs of histories, instead of trees would also be invaluable for rebase
+workflows, to understand the changes across the commit graph between before and
+after a rebase.
+
+A text format like git log would be easy to throw together, once the diff
+mechanics are worked out, but a GUI with editor integration would be very useful
+for viewing the changes hierarchically.
+
+## Transformation DSL
 
 My repo transformations are maintained over longer periods of time than the
-filter-repo docs imply it is designed for, since it is intended for one-time
-scripts. I'd love to have an expressive DSL that can declare the steps in a repo
+filter-repo was designed for, since it is intended for one-time scripts. I'd
+love to have an expressive DSL that can declare the steps in a repo
 transformation, similarly to reposurgeon.
 
-## Hooks
+## Advanced operations
+
+The operations in filter-repo are mostly subtractive, which makes any additive
+operations more difficult.
+
+## Callback hooks
 
 Additional information, that is not included in the fast-export stream, could be
 requested on-demand in callbacks using methods on the object.
@@ -78,11 +90,23 @@ of each blob to get the file names. This could generalized by adding a
 For user-defined logic for keeping or discarding commits, `Commit::drop` could
 be defined.
 
+If this is generalized, getters and setters could replace the properties used by
+filter-repo. Then there would be no distinction between data coming from the
+current object in the fast-export stream and data that needs to be retrieved
+from elsewhere. This also makes it more efficient from the Rust side, because
+then values can be copied to Python on demand.
+
+Rather than exposing these hooks as methods on a parameter to the callback, they
+can be functions in scope within the callback's globals.
+
+Getters and setters could share the same function name. The argument for a
+setter would be a keyword argument, so it can be omitted in the getter.
+
 ## Scripting
 
 Scripting is essential for easy extensibility.
 
-### Using a traditional scripting language
+### Using a scripting language
 
 Python is a good choice for filter-repo, because it is platform-independent, so
 it doesn't suffer from the issues of using shell scripts as in filter-branch.
@@ -99,24 +123,22 @@ with byte strings.
 Lua is easily embeddable and LuaJIT is fast. Unless its text processing is
 better than Python's, it's likely not worth it.
 
-### Using jq
-
-What if jq was the scripting language? jq is very nice for declarative scripts,
-and I find jq most useful for defining pipelines to transform streams. It could
-be embedded using jaq.
-
-The callbacks in filter-repo operate on a single piece of data at a time (a
-filename, message, name, email, refname, blob, commit, or reset). If the jq
-filter transformed a single value, most of the benefits of jq disappear, and if
-the values were streamed, jq would need to emit the same number of outputs,
-which makes it barely different from operating on one at a time.
-
-Efficiency-wise, mutations of the input (as in the Python style) would likely be
-more efficient than pure values.
-
-Is there some way the stream paradigm could be useful for transform-repo?
-
-### Multiple languages
+jq is great for declaratively transforming streams in pipelines. That would make
+it a poor fit for the callbacks, though, which process a single piece of data at
+a time. If the jq filter operated on just a single value, most of its benefits
+disappear, and if the values were streamed, jq would need to emit the same
+number of outputs, making it fragile. It would be better as an external
+processor of JSON exported from git-transform-repo.
 
 If it's useful to support multiple scripting languages, callbacks could be
 tagged with the language, such as `--commit-callback:py '…'`.
+
+### Using Rust
+
+Since it's written in Rust, library users could supply Rust callbacks.
+
+To support both Rust and Python callbacks, callbacks would be stored as a
+three-variant enum (`Rust`, `Python`, and `None`). When it's Rust, a cheaper
+representation without copying would be passed to the callback. If the two APIs
+are similar enough, perhaps the Rust representation could be automatically
+wrapped for Python with codegen similarly to bindgen.
