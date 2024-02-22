@@ -10,5 +10,6 @@ categories = ["development-tools"]
 
 [dependencies]
 anyhow = "1.0.80"
+paste = "1.0.14"
 pyo3 = { version = "0.20.2", features = ["anyhow", "auto-initialize"] }
 regex = "1.10.3"

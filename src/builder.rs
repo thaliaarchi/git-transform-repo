@@ -4,6 +4,7 @@ use std::{
     io::{self, BufRead, BufReader},
 };
 
+use paste::paste;
 use pyo3::{
     types::{PyDict, PyFunction, PyList},
     PyResult, Python,
@@ -11,6 +12,7 @@ use pyo3::{
 
 use crate::filter::{RepoFilter, TODO};
 
+/// A builder for constructing a [`RepoFilter`].
 pub struct Builder<'py> {
     py: Python<'py>,
     pub(crate) args: TODO,
@@ -27,7 +29,31 @@ pub struct Builder<'py> {
     code_buf: String,
 }
 
+macro_rules! callback(($name:ident, $doc_name:literal) => {
+    paste! {
+        /// Sets the Python callback for processing
+        #[doc = $doc_name]
+        /// to a function body string. If the string is a filename, it will be
+        /// read from that file.
+        #[inline]
+        pub fn [<$name _callback>](&mut self, callback: &str) -> anyhow::Result<&mut Self> {
+            self.[<$name _callback>] = Some(self.parse_callback(stringify!($name), callback)?);
+            Ok(self)
+        }
+
+        /// Sets the Python callback for processing
+        #[doc = $doc_name]
+        /// to a function, which has already been parsed.
+        #[inline]
+        pub fn [<$name _callback_object>](&mut self, callback: &'py PyFunction) -> &mut Self {
+            self.[<$name _callback>] = Some(callback);
+            self
+        }
+    }
+});
+
 impl<'py> Builder<'py> {
+    /// Creates a new `RepoFilter` builder with no callbacks.
     #[inline]
     pub fn new(py: Python<'py>, args: TODO) -> Self {
         Builder {
@@ -47,61 +73,22 @@ impl<'py> Builder<'py> {
         }
     }
 
+    /// Builds a `RepoFilter` with the current configuration.
     #[inline]
     pub fn build(self) -> RepoFilter<'py> {
         self.into()
     }
 
-    #[inline]
-    pub fn filename_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.filename_callback = Some(self.parse_callback("filename", callback)?);
-        Ok(self)
-    }
-    #[inline]
-    pub fn message_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.message_callback = Some(self.parse_callback("message", callback)?);
-        Ok(self)
-    }
-    #[inline]
-    pub fn name_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.name_callback = Some(self.parse_callback("name", callback)?);
-        Ok(self)
-    }
-    #[inline]
-    pub fn email_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.email_callback = Some(self.parse_callback("email", callback)?);
-        Ok(self)
-    }
-    #[inline]
-    pub fn refname_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.refname_callback = Some(self.parse_callback("refname", callback)?);
-        Ok(self)
-    }
-    #[inline]
-    pub fn blob_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.blob_callback = Some(self.parse_callback("blob", callback)?);
-        Ok(self)
-    }
-    #[inline]
-    pub fn commit_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.commit_callback = Some(self.parse_callback("commit", callback)?);
-        Ok(self)
-    }
-    #[inline]
-    pub fn tag_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.tag_callback = Some(self.parse_callback("tag", callback)?);
-        Ok(self)
-    }
-    #[inline]
-    pub fn reset_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.reset_callback = Some(self.parse_callback("reset", callback)?);
-        Ok(self)
-    }
-    #[inline]
-    pub fn done_callback(&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-        self.done_callback = Some(self.parse_callback("done", callback)?);
-        Ok(self)
-    }
+    callback!(filename, "filenames");
+    callback!(message, "messages (both commit messages and tag messages)");
+    callback!(name, "names of people");
+    callback!(email, "email addresses");
+    callback!(refname, "refnames");
+    callback!(blob, "blob objects");
+    callback!(commit, "commit objects");
+    callback!(tag, "tag objects");
+    callback!(reset, "reset objects");
+    callback!(done, "the end of the stream");
 
     fn parse_callback(&mut self, name: &str, callback: &str) -> anyhow::Result<&'py PyFunction> {
         // I want to compile the callback as is, so that source positions could
