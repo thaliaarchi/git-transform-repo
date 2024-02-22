@@ -69,10 +69,15 @@ filter-repo was designed for, since it is intended for one-time scripts. I'd
 love to have an expressive DSL that can declare the steps in a repo
 transformation, similarly to reposurgeon.
 
-## Advanced operations
+### Rebase-like actions
 
-The operations in filter-repo are mostly subtractive, which makes any additive
-operations more difficult.
+The interactive rebase todo list works well for writing steps to modify commits
+and the DSL could take inspiration from it and replace some of its use cases.
+For example, the command `reword 0123abc "New commit message"` could replace the
+message of the identified commit, `reword 0123abc` could open the message in
+your `core.editor` for editing, and `reword 0123abc <<EOF` could start a
+heredoc-style message. Replace patterns could be supported too, like
+`reword 0123abc /old ([^ ]+)/ "new \1"`.
 
 ## Callback hooks
 

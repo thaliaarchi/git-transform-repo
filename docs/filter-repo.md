@@ -24,28 +24,6 @@ t/t9391/splice_repos.py demonstrates a limited case of splicing histories.
 [a31a381]: https://github.com/newren/git-filter-repo/commit/a31a381fb81fe3ec7169ee4fcaada8f75505e527
 [7d42c20]: https://github.com/newren/git-filter-repo/commit/7d42c2093cd4e6690dda5e9c9a1139d4be9ab69b
 
-### Use case: Disjoint files (monorepo)
-
-This feature is needed when splicing multiple repos together to produce a
-monorepo. Each input sub-repo is first filtered to move its files to a
-subdirectory, then their histories are interleaved to produce a unified history.
-Files wouldn't conflict between the input repos, but it comes with all the
-caveats mentioned in the above git-filter-repo commits.
-
-### Use case: Overlapping files (releases)
-
-Repos that are constructed for the same project, but which have different ranges
-of releases, would be merged differently. Whenever the spliced history switches
-between repos, a DELETEALL directive would be issued, so that spliced-in changes
-do not bleed into successive commits.
-
-This is already handled with replace refs and vanilla git-filter-repo, but an
-automatic mechanism to setup those parent replacements would be useful.
-
-I could use this in numerous ways: Releases of Inferno could be unified into a
-history. Quine Relay's [spoiler branch](./git.md#use-case-quine-relay) of
-force-pushed single commits could be turned into a history. And more.
-
 ## Text replacement precedence
 
 `FilteringOptions.get_replace_text` partitions text replacements into literals
@@ -67,16 +45,6 @@ unnecessary here.
 Callbacks have an undocumented second parameter, named [`_do_not_use_this_var`](https://github.com/newren/git-filter-repo/blob/4bc9022afce5e2e138596bbecf4df310212ae164/git-filter-repo#L2840),
 which is named `aux_info` at the call sites or `metadata` in the `contrib/`
 library usage.
-
-## Modifying files in any commit
-
-git filter-repo (rightfully) assumes that it is not useful to run filters on all
-blobs on all commits, due to the high performance cost. (It's discussed in
-`contrib/filter-repo-demos/filter-lamely`.)
-
-However, this would be useful, for example, to automatically update license
-header years in any commit that touches a file that had not already been
-modified that year.
 
 ## User parsing
 
