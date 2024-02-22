@@ -15,7 +15,7 @@ pub struct TODO;
 pub struct FastExportParser {}
 
 /// A tuple of (depth, list-of-ancestors). Commits and ancestors are identified
-/// by their id (their 'mark' in fast-export or fast-import speak). The depth of
+/// by their id (their `mark` in fast-export or fast-import speak). The depth of
 /// a commit is one more than the max depth of any of its ancestors.
 pub struct AncestryGraph {}
 
@@ -29,13 +29,7 @@ pub struct RepoFilter<'py> {
     /// Repo we are exporting.
     repo_working_dir: Option<PathBuf>,
 
-    /// Callbacks for acting on objects printed by `FastExport`.
-    blob_callback: Option<&'py PyFunction>,
-    commit_callback: Option<&'py PyFunction>,
-    tag_callback: Option<&'py PyFunction>,
-    reset_callback: Option<&'py PyFunction>,
-    done_callback: Option<&'py PyFunction>,
-
+    // Convenience callbacks.
     /// Callback for acting on filenames from commits.
     filename_callback: Option<&'py PyFunction>,
     /// Callback for acting on commit and tag messages.
@@ -46,6 +40,13 @@ pub struct RepoFilter<'py> {
     email_callback: Option<&'py PyFunction>,
     /// Callback for acting on ref names from commit, tag, and reset commands.
     refname_callback: Option<&'py PyFunction>,
+
+    /// Callbacks for acting on raw objects printed by `FastExport`.
+    blob_callback: Option<&'py PyFunction>,
+    commit_callback: Option<&'py PyFunction>,
+    tag_callback: Option<&'py PyFunction>,
+    reset_callback: Option<&'py PyFunction>,
+    done_callback: Option<&'py PyFunction>,
 
     input: Option<TODO>,
     /// The fast-export process.
@@ -75,8 +76,8 @@ pub struct RepoFilter<'py> {
 
     /// A set of commit hash pairs (oldhash, newhash) which used to be merge
     /// commits but due to filtering were turned into non-merge commits. The
-    /// commits probably have suboptimal commit messages (e.g. "Merge branch
-    /// next into master").
+    /// commits probably have suboptimal commit messages (e.g., "Merge branch
+    /// feature into main").
     commits_no_longer_merges: Vec<(Oid, Oid)>,
 
     /// A dict of original_ids to new_ids; filtering commits means getting new
@@ -135,16 +136,16 @@ impl<'py> From<Builder<'py>> for RepoFilter<'py> {
         RepoFilter {
             args: b.args,
             repo_working_dir: None,
-            blob_callback: b.blob_callback,
-            commit_callback: b.commit_callback,
-            tag_callback: b.tag_callback,
-            reset_callback: b.reset_callback,
-            done_callback: b.done_callback,
             filename_callback: b.filename_callback,
             message_callback: b.message_callback,
             name_callback: b.name_callback,
             email_callback: b.email_callback,
             refname_callback: b.refname_callback,
+            blob_callback: b.blob_callback,
+            commit_callback: b.commit_callback,
+            tag_callback: b.tag_callback,
+            reset_callback: b.reset_callback,
+            done_callback: b.done_callback,
             input: None,
             fe_process: None,
             fe_orig: None,

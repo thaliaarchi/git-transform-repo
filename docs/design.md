@@ -102,6 +102,11 @@ can be functions in scope within the callback's globals.
 Getters and setters could share the same function name. The argument for a
 setter would be a keyword argument, so it can be omitted in the getter.
 
+To maintain backwards compatibility with filter-repo, the old callbacks would
+keep their same flags like `--commit-callback` and the new style would be named
+differently. Perhaps `--process-commit`, `--commit-hook`, `--handle-commit`, or
+`--on-commit`?
+
 ## Scripting
 
 Scripting is essential for easy extensibility.

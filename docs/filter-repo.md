@@ -83,3 +83,33 @@ modified that year.
 Is the pattern `(author|committer|tagger) (.*?) <(.*?)> (.*)\n` correct? Having
 the date be greedy, but never containing `<` or `>` is a waste, because it's
 useful for the name to contain `<` or `>`.
+
+## Inconsistent callback ordering
+
+- `FastExportParser.__init__` keyword args: tag, commit, blob, progress, reset,
+  checkpoint, done
+- `FastExportParser.__init__` assignments (not observable): tag, blob, reset,
+  commit, progress, checkpoint, done
+- “Generic callback code snippets” argument group: filename, message, name,
+  email, refname, blob, commit, tag, reset
+- `RepoFilter.__init__` keyword args: filename, message, name, email, refname,
+  blob, commit, tag, reset, done
+- `RepoFilter.__init__` assignments (not observable):
+  - blob, commit, tag, reset, done
+  - filename, message, name, email, refname
+- `_handle_arg_callbacks` (not observable): filename, message, name, email,
+  refname, blob, commit, tag, reset
+- `FastExportParser` instance in `RepoFilter.run`: blob, commit, tag, reset,
+  done
+- `man git-filter-repo` “CALLBACKS” section:
+  - blob, commit, tag, reset
+  - filename, message, name, email, refname
+- [git fast-import docs](https://git-scm.com/docs/git-fast-import#_commands):
+  commit, tag, reset, blob, alias, checkpoint, progress, done, get-mark,
+  cat-blob, ls, feature, option
+
+I will use the order filename, message, name, email, refname, blob, commit, tag,
+reset, progress, checkpoint, done. It is the same order as the keyword arguments
+of `RepoFilter.__init__`, which is the most public part of the library API that
+exposes callbacks, and also matches documentation and most other usage. The
+callbacks exclusive to `FastExportParser` use the order from there.
