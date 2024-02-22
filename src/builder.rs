@@ -1,9 +1,11 @@
 use std::{
     fmt::{self, Debug, Formatter},
     fs::File,
-    io::{self, BufRead, BufReader},
+    io::{BufRead, BufReader},
+    path::Path,
 };
 
+use anyhow::Result;
 use paste::paste;
 use pyo3::{
     types::{PyDict, PyFunction, PyList},
@@ -32,22 +34,15 @@ pub struct Builder<'py> {
 macro_rules! callback(($name:ident, $doc_name:literal) => {
     paste! {
         /// Sets the Python callback for processing
-        #[doc = $doc_name]
-        /// to a function body string. If the string is a filename, it will be
-        /// read from that file.
+        #[doc = concat!($doc_name, ".")]
+        /// It may be a `&str`, `&Path`, or `&mut BufRead` to parse a function
+        /// body, or an already parsed `&'py PyFunction`.
         #[inline]
-        pub fn [<$name _callback>](&mut self, callback: &str) -> anyhow::Result<&mut Self> {
-            self.[<$name _callback>] = Some(self.parse_callback(stringify!($name), callback)?);
-            Ok(self)
-        }
-
-        /// Sets the Python callback for processing
-        #[doc = $doc_name]
-        /// to a function, which has already been parsed.
-        #[inline]
-        pub fn [<$name _callback_object>](&mut self, callback: &'py PyFunction) -> &mut Self {
+        pub fn [<$name _callback>]<T: ToCallback<'py>>(&mut self, callback: T) -> Result<&mut Self> {
+            self.code_buf.clear();
+            let callback = callback.to_callback(self.py, stringify!($name), &mut self.code_buf)?;
             self.[<$name _callback>] = Some(callback);
-            self
+            Ok(self)
         }
     }
 });
@@ -89,43 +84,6 @@ impl<'py> Builder<'py> {
     callback!(tag, "tag objects");
     callback!(reset, "reset objects");
     callback!(done, "the end of the stream");
-
-    fn parse_callback(&mut self, name: &str, callback: &str) -> anyhow::Result<&'py PyFunction> {
-        // I want to compile the callback as is, so that source positions could
-        // be maintained, but it needs to be wrapped in a function, because it
-        // can contain `return`. `Py_CompileString`, which both `Python::eval`
-        // and `Python::run` use, does not work with `return` at the top level
-        // and there seems to be no alternative API in CPython.
-        self.code_buf.clear();
-        self.code_buf.push_str("def callback(");
-        self.code_buf.push_str(name);
-        self.code_buf.push_str(", _do_not_use_this_var = None):");
-        match File::open(callback) {
-            Ok(f) => {
-                for line in BufReader::new(f).lines() {
-                    self.code_buf.push_str("\n  ");
-                    self.code_buf.push_str(&line?);
-                }
-            }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                for line in callback.lines() {
-                    self.code_buf.push_str("\n  ");
-                    self.code_buf.push_str(line);
-                }
-            }
-            Err(err) => return Err(err.into()),
-        }
-        self.code_buf.push('\n');
-
-        // TODO: Specialize `Python::run`, so I can pass a custom filename
-        // like `<commit_callback>` instead of `<string>`.
-
-        let globals = new_py_globals(self.py)?;
-        let locals = PyDict::new(self.py);
-        self.py.run(&self.code_buf, Some(globals), Some(locals))?;
-        let callback = locals.get_item("callback")?.unwrap();
-        Ok(callback.extract()?)
-    }
 }
 
 impl Clone for Builder<'_> {
@@ -164,6 +122,96 @@ impl Debug for Builder<'_> {
             .field("done_callback", &self.done_callback)
             .finish()
     }
+}
+
+/// A type that can be converted to a Python callback.
+///
+/// This allows for overloading of the callback setters in `Builder`.
+pub trait ToCallback<'py> {
+    fn to_callback(
+        self,
+        py: Python<'py>,
+        name: &str,
+        code_buf: &mut String,
+    ) -> Result<&'py PyFunction>;
+}
+
+impl<'py> ToCallback<'py> for &str {
+    #[inline]
+    fn to_callback(
+        self,
+        py: Python<'py>,
+        name: &str,
+        code_buf: &mut String,
+    ) -> Result<&'py PyFunction> {
+        parse_callback(py, &mut self.as_bytes(), name, code_buf)
+    }
+}
+
+impl<'py> ToCallback<'py> for &Path {
+    #[inline]
+    fn to_callback(
+        self,
+        py: Python<'py>,
+        name: &str,
+        code_buf: &mut String,
+    ) -> Result<&'py PyFunction> {
+        let mut f = BufReader::new(File::open(self)?);
+        parse_callback(py, &mut f, name, code_buf)
+    }
+}
+
+impl<'py, T: BufRead> ToCallback<'py> for &mut T {
+    #[inline]
+    fn to_callback(
+        self,
+        py: Python<'py>,
+        name: &str,
+        code_buf: &mut String,
+    ) -> Result<&'py PyFunction> {
+        parse_callback(py, self, name, code_buf)
+    }
+}
+
+impl<'py> ToCallback<'py> for &'py PyFunction {
+    #[inline]
+    fn to_callback(
+        self,
+        _py: Python<'py>,
+        _name: &str,
+        _buf: &mut String,
+    ) -> Result<&'py PyFunction> {
+        Ok(self)
+    }
+}
+
+fn parse_callback<'py>(
+    py: Python<'py>,
+    callback: &mut dyn BufRead,
+    name: &str,
+    code_buf: &mut String,
+) -> Result<&'py PyFunction> {
+    // Since callbacks can contain `return`, they need to be wrapped in a
+    // function. Otherwise, I could invoke `Py_CompileString` without
+    // `PyEval_EvalCode` and keep the same source positions for error messages.
+    // If they were changed incompatibly from filter-repo to use setters instead
+    // of `return`, this would be possible.
+    code_buf.push_str("def callback(");
+    code_buf.push_str(name);
+    code_buf.push_str(", _do_not_use_this_var = None):");
+    for line in callback.lines() {
+        code_buf.push_str("\n  ");
+        code_buf.push_str(&line?);
+    }
+    code_buf.push('\n');
+
+    // TODO: Specialize `Python::run`, so I can pass a custom filename like
+    // `<commit_callback>` instead of `<string>`.
+    let globals = new_py_globals(py)?;
+    let locals = PyDict::new(py);
+    py.run(code_buf, Some(globals), Some(locals))?;
+    let callback = locals.get_item("callback")?.unwrap();
+    Ok(callback.extract()?)
 }
 
 fn new_py_globals<'py>(py: Python<'py>) -> PyResult<&'py PyDict> {
