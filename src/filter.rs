@@ -1,30 +1,27 @@
-#![allow(dead_code, private_interfaces)]
+#![allow(dead_code)]
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
-    io::{self, BufRead, BufReader},
     path::PathBuf,
 };
 
-use pyo3::{
-    types::{PyDict, PyFunction, PyList},
-    PyResult, Python,
-};
+use pyo3::{types::PyFunction, Python};
 use regex::Regex;
 
-struct TODO;
+use crate::builder::Builder;
 
-struct FastExportParser {}
+pub struct TODO;
+
+pub struct FastExportParser {}
 
 /// A tuple of (depth, list-of-ancestors). Commits and ancestors are identified
 /// by their id (their 'mark' in fast-export or fast-import speak). The depth of
 /// a commit is one more than the max depth of any of its ancestors.
-struct AncestryGraph {}
+pub struct AncestryGraph {}
 
-struct ProgressWriter {}
+pub struct ProgressWriter {}
 
-struct Oid {}
+pub struct Oid {}
 
 pub struct RepoFilter<'py> {
     args: TODO,
@@ -127,32 +124,27 @@ pub struct RepoFilter<'py> {
 }
 
 impl<'py> RepoFilter<'py> {
-    pub fn new(
-        args: TODO,
-        filename_callback: Option<&'py PyFunction>,
-        message_callback: Option<&'py PyFunction>,
-        name_callback: Option<&'py PyFunction>,
-        email_callback: Option<&'py PyFunction>,
-        refname_callback: Option<&'py PyFunction>,
-        blob_callback: Option<&'py PyFunction>,
-        commit_callback: Option<&'py PyFunction>,
-        tag_callback: Option<&'py PyFunction>,
-        reset_callback: Option<&'py PyFunction>,
-        done_callback: Option<&'py PyFunction>,
-    ) -> Self {
+    #[inline]
+    pub fn builder(py: Python<'py>, args: TODO) -> Builder {
+        Builder::new(py, args)
+    }
+}
+
+impl<'py> From<Builder<'py>> for RepoFilter<'py> {
+    fn from(b: Builder<'py>) -> Self {
         RepoFilter {
-            args,
+            args: b.args,
             repo_working_dir: None,
-            blob_callback,
-            commit_callback,
-            tag_callback,
-            reset_callback,
-            done_callback,
-            filename_callback,
-            message_callback,
-            name_callback,
-            email_callback,
-            refname_callback,
+            blob_callback: b.blob_callback,
+            commit_callback: b.commit_callback,
+            tag_callback: b.tag_callback,
+            reset_callback: b.reset_callback,
+            done_callback: b.done_callback,
+            filename_callback: b.filename_callback,
+            message_callback: b.message_callback,
+            name_callback: b.name_callback,
+            email_callback: b.email_callback,
+            refname_callback: b.refname_callback,
             input: None,
             fe_process: None,
             fe_orig: None,
@@ -180,140 +172,6 @@ impl<'py> RepoFilter<'py> {
             hash_re: Regex::new(r"(\b[0-9a-f]{7,40}\b)").unwrap(),
         }
     }
-
-    pub fn parse(
-        py: Python<'py>,
-        args: TODO,
-        filename_callback: Option<&str>,
-        message_callback: Option<&str>,
-        name_callback: Option<&str>,
-        email_callback: Option<&str>,
-        refname_callback: Option<&str>,
-        blob_callback: Option<&str>,
-        commit_callback: Option<&str>,
-        tag_callback: Option<&str>,
-        reset_callback: Option<&str>,
-        done_callback: Option<&str>,
-    ) -> anyhow::Result<Self> {
-        fn parse_callback<'py>(
-            py: Python<'py>,
-            name: &str,
-            callback: Option<&str>,
-            code_buf: &mut String,
-        ) -> anyhow::Result<Option<&'py PyFunction>> {
-            let Some(callback) = callback else {
-                return Ok(None);
-            };
-
-            // I want to compile the callback as is, so that source positions
-            // could be maintained, but it needs to be wrapped in a function,
-            // because it can contain `return`. `Py_CompileString`, which both
-            // `Python::eval` and `Python::run` use, does not work with `return`
-            // at the top level and there seems to be no alternative API in
-            // CPython.
-            code_buf.clear();
-            code_buf.push_str("def callback(");
-            code_buf.push_str(name);
-            code_buf.push_str(", _do_not_use_this_var = None):");
-            match File::open(callback) {
-                Ok(f) => {
-                    for line in BufReader::new(f).lines() {
-                        code_buf.push_str("\n  ");
-                        code_buf.push_str(&line?);
-                    }
-                }
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                    for line in callback.lines() {
-                        code_buf.push_str("\n  ");
-                        code_buf.push_str(line);
-                    }
-                }
-                Err(err) => return Err(err.into()),
-            }
-            code_buf.push('\n');
-
-            // TODO: Specialize `Python::run`, so I can pass a custom filename
-            // like `<commit_callback>` instead of `<string>`.
-
-            let globals = new_py_globals(py)?;
-            let locals = PyDict::new(py);
-            py.run(&code_buf, Some(globals), Some(locals))?;
-            let callback = locals.get_item("callback")?.unwrap();
-            Ok(Some(callback.extract()?))
-        }
-
-        let mut code_buf = String::new();
-        Ok(RepoFilter::new(
-            args,
-            parse_callback(py, "filename", filename_callback, &mut code_buf)?,
-            parse_callback(py, "message", message_callback, &mut code_buf)?,
-            parse_callback(py, "name", name_callback, &mut code_buf)?,
-            parse_callback(py, "email", email_callback, &mut code_buf)?,
-            parse_callback(py, "refname", refname_callback, &mut code_buf)?,
-            parse_callback(py, "blob", blob_callback, &mut code_buf)?,
-            parse_callback(py, "commit", commit_callback, &mut code_buf)?,
-            parse_callback(py, "tag", tag_callback, &mut code_buf)?,
-            parse_callback(py, "reset", reset_callback, &mut code_buf)?,
-            parse_callback(py, "done", done_callback, &mut code_buf)?,
-        ))
-    }
-}
-
-fn new_py_globals<'py>(py: Python<'py>) -> PyResult<&'py PyDict> {
-    // git-filter-repo uses `globals()`, which leaks many internal details. It
-    // was probably only intended to expose imports and the public API
-    // (`__all__`).
-    //
-    // TODO: Recreate the public library API in Rust and expose it to callbacks.
-
-    let globals = PyDict::new(py);
-
-    for import in [
-        "argparse",
-        "collections",
-        "fnmatch",
-        "gettext",
-        "io",
-        "os",
-        "platform",
-        "re",
-        "shutil",
-        "subprocess",
-        "sys",
-        "time",
-        "textwrap",
-    ] {
-        globals.set_item(import, py.import(import)?)?;
-    }
-    let datetime = py.import("datetime")?;
-    globals.set_item("tzinfo", datetime.getattr("tzinfo")?)?;
-    globals.set_item("timedelta", datetime.getattr("timedelta")?)?;
-    globals.set_item("datetime", datetime.getattr("datetime")?)?;
-
-    globals.set_item(
-        "__all__",
-        PyList::new(
-            py,
-            [
-                "Blob",
-                "Reset",
-                "FileChange",
-                "Commit",
-                "Tag",
-                "Progress",
-                "Checkpoint",
-                "FastExportParser",
-                "ProgressWriter",
-                "string_to_date",
-                "date_to_string",
-                "record_id_rename",
-                "GitUtils",
-                "FilteringOptions",
-                "RepoFilter",
-            ],
-        ),
-    )?;
-    Ok(globals)
 }
 
 impl AncestryGraph {
@@ -330,28 +188,20 @@ impl ProgressWriter {
 
 #[cfg(test)]
 mod tests {
-    use pyo3::types::PyString;
+    use pyo3::{
+        types::{PyDict, PyString},
+        Python,
+    };
 
-    use super::*;
+    use crate::filter::{RepoFilter, TODO};
 
     #[test]
     fn parse_and_call_callback() {
         Python::with_gil(|py| {
-            let filter = RepoFilter::parse(
-                py,
-                TODO,
-                Some("return f\"Hello, {filename}!\""),
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
+            let mut b = RepoFilter::builder(py, TODO);
+            b.filename_callback("return f\"Hello, {filename}!\"")
+                .unwrap();
+            let filter = b.build();
             let res = filter
                 .filename_callback
                 .unwrap()
