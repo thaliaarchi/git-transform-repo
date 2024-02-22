@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use paste::paste;
 use pyo3::{
     types::{PyDict, PyFunction, PyList},
@@ -35,10 +35,13 @@ macro_rules! callback(($name:ident, $doc_name:literal) => {
     paste! {
         /// Sets the Python callback for processing
         #[doc = concat!($doc_name, ".")]
-        /// It may be a `&str`, `&Path`, or `&mut BufRead` to parse a function
-        /// body, or an already parsed `&'py PyFunction`.
+        /// It may be a function body from a `&str`, `&Path`, or `&mut BufRead`,
+        /// or an already parsed `&'py PyFunction`.
         #[inline]
         pub fn [<$name _callback>]<T: ToCallback<'py>>(&mut self, callback: T) -> Result<&mut Self> {
+            if self.[<$name _callback>].is_some() {
+                bail!("{} callback redefined", stringify!($name));
+            }
             self.code_buf.clear();
             let callback = callback.to_callback(self.py, stringify!($name), &mut self.code_buf)?;
             self.[<$name _callback>] = Some(callback);
