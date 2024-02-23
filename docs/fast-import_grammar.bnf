@@ -66,7 +66,7 @@ cat_blob ::=
 # The mark is 0 when this line is omitted.
 mark ::= "mark :" int SEP
 mark_ref ::= ":" int
-original_oid ::= "original-oid " NOT_LF* SEP
+original_oid ::= "original-oid " NOT_LF_ONLY* SEP
 
 # Supports files larger than the configured --max-pack-size, when using the the
 # length-prefixed syntax.
@@ -104,8 +104,8 @@ date if --date-format=now ::= "now"
 # BUG: Allows extraneous sign in time zone
 date_raw ::= int " " [+-] [0-9]+
 
-# BUG: Many uses of strtoumax do not consume the whole line, potentially leaving
-# trailing junk.
+# BUG: Most uses of strto* have incomplete error handling, allowing unintended
+# signs, parse errors, empty digits, and junk after the integer.
 int ::= [+-]? [0-9]+
 uint ::= "+"? [0-9]+
 unit_factor ::= [kKmMgG]?

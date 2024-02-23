@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,10 +86,33 @@ pub struct OptionOther<'a> {
     pub option: &'a [u8],
 }
 
+/// A reference to an object by an integer, which allows the front-end to recall
+/// it later without knowing its hash. The value `:0` is reserved and cannot be
+/// used as a mark.
+///
+/// # Differences from fast-import
+///
+/// If `:0` is explicitly used in a mark definition, it is rejected as an error.
+/// fast-import allows it and treats it as if no mark was given, even though its
+/// [docs](https://git-scm.com/docs/git-fast-import#_mark) state it is reserved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Mark {
-    pub mark: u64,
+    // Marks in fast-import are `uintmax_t`, which is guaranteed to be at least
+    // 64 bits.
+    pub mark: NonZeroU64,
+}
+
+impl Mark {
+    #[inline]
+    pub fn new(mark: u64) -> Option<Mark> {
+        NonZeroU64::new(mark).map(|mark| Mark { mark })
+    }
+
+    #[inline]
+    pub fn get(&self) -> u64 {
+        self.mark.get()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

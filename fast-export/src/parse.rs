@@ -1,20 +1,25 @@
 use std::{
     fmt::{self, Debug, Formatter},
     io::{self, BufRead},
+    ops::Range,
+    str,
 };
 
 use thiserror::Error;
 
-use crate::command::{Command, Done, Progress};
+use crate::command::{Blob, Command, Data, Done, Mark, OriginalOid, Progress};
 
 type Result<T> = std::result::Result<T, ParseError>;
 
 /// Parser for fast-export streams.
 pub struct Parser<R: BufRead> {
     input: R,
-    line_buf: Vec<u8>,
+    command_buf: Vec<u8>,
+    cursor: Span,
     eof: bool,
 }
+
+type Span = Range<usize>;
 
 /// An error from parsing a fast-export stream.
 #[derive(Debug, Error)]
@@ -35,9 +40,15 @@ pub struct CommandError {
 /// A kind of error from parsing a command in a fast-export stream.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
 pub enum CommandErrorKind {
+    #[error("invalid mark")]
+    InvalidMark,
+    #[error("cannot use :0 as a mark")]
+    ZeroMark,
     #[error("unsupported command")]
     UnsupportedCommand,
 }
+
+use CommandErrorKind as ErrorKind;
 
 impl<R: BufRead> Parser<R> {
     /// Parses the next command in the fast-export stream.
@@ -47,121 +58,152 @@ impl<R: BufRead> Parser<R> {
     ///
     // Corresponds to the loop in `cmd_fast_import` in fast-import.c.
     pub fn next(&mut self) -> Result<Command<'_>> {
-        self.read_line()?;
+        self.command_buf.clear();
+        self.bump_line()?;
         if self.eof {
             return Ok(Command::Done(Done::Eof));
         }
-        let line = &self.line_buf[..];
-        if line == b"blob" {
+        if self.eat_all(b"blob") {
             self.parse_blob()
-        } else if line.starts_with(b"commit ") {
+        } else if self.eat_prefix(b"commit ") {
             self.parse_commit()
-        } else if line.starts_with(b"tag ") {
+        } else if self.eat_prefix(b"tag ") {
             self.parse_tag()
-        } else if line.starts_with(b"reset ") {
+        } else if self.eat_prefix(b"reset ") {
             self.parse_reset()
-        } else if line.starts_with(b"ls ") {
+        } else if self.eat_prefix(b"ls ") {
             self.parse_ls()
-        } else if line.starts_with(b"cat-blob ") {
+        } else if self.eat_prefix(b"cat-blob ") {
             self.parse_cat_blob()
-        } else if line.starts_with(b"get-mark ") {
+        } else if self.eat_prefix(b"get-mark ") {
             self.parse_get_mark()
-        } else if line == b"checkpoint" {
+        } else if self.eat_all(b"checkpoint") {
             self.parse_checkpoint()
-        } else if line == b"done" {
+        } else if self.eat_all(b"done") {
             Ok(Command::Done(Done::Explicit))
-        } else if line == b"alias" {
+        } else if self.eat_all(b"alias") {
             self.parse_alias()
-        } else if line.starts_with(b"progress ") {
+        } else if self.eat_prefix(b"progress ") {
             self.parse_progress()
-        } else if line.starts_with(b"feature ") {
+        } else if self.eat_prefix(b"feature ") {
             self.parse_feature()
-        } else if line.starts_with(b"option ") {
+        } else if self.eat_prefix(b"option ") {
             self.parse_option()
         } else {
-            Err(ParseError::new(CommandErrorKind::UnsupportedCommand, line))
+            Err(self.err(ErrorKind::UnsupportedCommand))
         }
     }
 
     // Corresponds to `parse_new_blob` in fast-import.c.
     fn parse_blob(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf == b"blob");
-        todo!()
+        self.bump_line()?;
+        let mark = self.parse_mark()?;
+        let original_oid = self.parse_original_oid()?;
+        let (data, delim) = self.parse_data()?;
+        Ok(Command::Blob(Blob {
+            mark,
+            original_oid: original_oid.map(|sp| OriginalOid { oid: self.get(sp) }),
+            data: Data {
+                data: self.get(data),
+                delim: delim.map(|sp| self.get(sp)),
+            },
+        }))
     }
 
     // Corresponds to `parse_new_commit` in fast-import.c.
     fn parse_commit(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf.starts_with(b"commit "));
-        let _arg = &self.line_buf[b"commit ".len()..];
         todo!()
     }
 
     // Corresponds to `parse_new_tag` in fast-import.c.
     fn parse_tag(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf.starts_with(b"tag "));
-        let _arg = &self.line_buf[b"tag ".len()..];
         todo!()
     }
 
     // Corresponds to `parse_reset_branch` in fast-import.c.
     fn parse_reset(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf.starts_with(b"reset "));
-        let _arg = &self.line_buf[b"reset ".len()..];
         todo!()
     }
 
     // Corresponds to `parse_ls` in fast-import.c.
     fn parse_ls(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf.starts_with(b"ls "));
-        let _arg = &self.line_buf[b"ls ".len()..];
         todo!()
     }
 
     // Corresponds to `parse_cat_blob` in fast-import.c.
     fn parse_cat_blob(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf.starts_with(b"cat-blob "));
-        let _arg = &self.line_buf[b"cat-blob ".len()..];
         todo!()
     }
 
     // Corresponds to `parse_get_mark` in fast-import.c.
     fn parse_get_mark(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf.starts_with(b"get-mark "));
-        let _arg = &self.line_buf[b"get-mark ".len()..];
         todo!()
     }
 
     // Corresponds to `parse_checkpoint` in fast-import.c.
     fn parse_checkpoint(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf == b"checkpoint");
         todo!()
     }
 
     // Corresponds to `parse_alias` in fast-import.c.
     fn parse_alias(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf == b"alias");
         todo!()
     }
 
     // Corresponds to `parse_progress` in fast-import.c.
     fn parse_progress(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf.starts_with(b"progress "));
+        let message = self.cursor();
         self.skip_optional_lf()?;
-        let message = &self.line_buf[b"progress ".len()..];
-        Ok(Command::Progress(Progress { message }))
+        Ok(Command::Progress(Progress {
+            message: self.get(message),
+        }))
     }
 
     // Corresponds to `parse_feature` in fast-import.c.
     fn parse_feature(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf.starts_with(b"feature "));
-        let _feature = &self.line_buf[b"feature ".len()..];
         todo!()
     }
 
     // Corresponds to `parse_option` in fast-import.c.
     fn parse_option(&mut self) -> Result<Command<'_>> {
-        debug_assert!(self.line_buf.starts_with(b"option "));
-        let _option = &self.line_buf[b"option ".len()..];
+        todo!()
+    }
+
+    /// # Differences from fast-import
+    ///
+    /// `mark :0` is rejected here, but not by fast-import.
+    ///
+    /// filter-repo does not check any errors for this integer. It allows `+`
+    /// sign, parse errors, empty digits, and junk after the integer.
+    ///
+    // Corresponds to `parse_mark` in fast-import.c.
+    fn parse_mark(&mut self) -> Result<Option<Mark>> {
+        if self.eat_prefix(b"mark :") {
+            let rest = self.line_remaining();
+            // SAFETY: from_str_radix operates on byes and accepts only ASCII.
+            let mark = u64::from_str_radix(unsafe { str::from_utf8_unchecked(rest) }, 10)
+                .map_err(|_| self.err(ErrorKind::InvalidMark))?;
+            self.bump_line()?;
+            let mark = Mark::new(mark).ok_or_else(|| self.err(ErrorKind::ZeroMark))?;
+            Ok(Some(mark))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Corresponds to `parse_original_identifier` in fast-import.c.
+    fn parse_original_oid(&mut self) -> Result<Option<Span>> {
+        if self.eat_prefix(b"original-oid ") {
+            let original_oid = self.cursor();
+            self.bump_line()?;
+            Ok(Some(original_oid))
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Corresponds to `parse_and_store_blob` in fast-import.c.
+    fn parse_data(&mut self) -> Result<(Span, Option<Span>)> {
         todo!()
     }
 
@@ -170,10 +212,10 @@ impl<R: BufRead> Parser<R> {
     /// contain any bytes (including NUL), except for LF.
     ///
     // Corresponds to `read_next_command` in fast-import.c.
-    fn read_line(&mut self) -> io::Result<()> {
+    fn bump_line(&mut self) -> io::Result<()> {
         while !self.eof {
-            self.read_line_raw()?;
-            match &self.line_buf[..] {
+            self.bump_line_raw()?;
+            match self.line_remaining() {
                 [b'#', ..] => continue,
                 _ => break,
             }
@@ -185,16 +227,18 @@ impl<R: BufRead> Parser<R> {
     /// delimiter. Lines may contain any bytes (including NUL), except for LF.
     ///
     // Corresponds to `strbuf_getline_lf` in strbuf.c.
-    fn read_line_raw(&mut self) -> io::Result<()> {
+    fn bump_line_raw(&mut self) -> io::Result<()> {
         debug_assert!(!self.eof, "already at EOF");
-        self.line_buf.clear();
-        self.input.read_until(b'\n', &mut self.line_buf)?;
-        if let [.., b'\n'] = &self.line_buf[..] {
-            self.line_buf.pop();
+        let start = self.command_buf.len();
+        self.input.read_until(b'\n', &mut self.command_buf)?;
+        let mut end = self.command_buf.len();
+        if let [.., b'\n'] = &self.command_buf[start..] {
+            end -= 1;
         } else {
             // EOF is reached in `read_until` iff the delimiter is not included.
             self.eof = true;
         }
+        self.cursor = start..end;
         Ok(())
     }
 
@@ -202,13 +246,67 @@ impl<R: BufRead> Parser<R> {
     fn skip_optional_lf(&mut self) -> io::Result<()> {
         todo!()
     }
+
+    /// Returns the range of text on a line, that is currently being processed.
+    #[inline(always)]
+    fn cursor(&self) -> Span {
+        self.cursor.clone()
+    }
+
+    /// Returns the text in the command at the cursor.
+    #[inline(always)]
+    fn get(&self, range: Range<usize>) -> &[u8] {
+        &self.command_buf[range]
+    }
+
+    /// Returns the remainder of the line at the cursor.
+    #[inline(always)]
+    fn line_remaining(&self) -> &[u8] {
+        &self.command_buf[self.cursor()]
+    }
+
+    /// Consumes text at the cursor on the current line, if it matches the
+    /// prefix, and returns whether the cursor was bumped.
+    //
+    // Corresponds to `skip_prefix` in git-compat-util.c
+    #[inline(always)]
+    fn eat_prefix(&mut self, prefix: &[u8]) -> bool {
+        if self.line_remaining().starts_with(prefix) {
+            self.cursor.start += prefix.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Consumes the remainder of the current line, if it matches the bytes, and
+    /// returns whether the cursor was bumped.
+    #[inline(always)]
+    fn eat_all(&mut self, b: &[u8]) -> bool {
+        if self.line_remaining() == b {
+            self.cursor.start = self.cursor.end;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Creates a parse error at the cursor.
+    #[inline(never)]
+    fn err(&self, kind: CommandErrorKind) -> ParseError {
+        ParseError::Command(CommandError {
+            kind,
+            line: self.line_remaining().to_owned(),
+        })
+    }
 }
 
 impl<R: BufRead + Clone> Clone for Parser<R> {
     fn clone(&self) -> Self {
         Parser {
             input: self.input.clone(),
-            line_buf: self.line_buf.clone(),
+            command_buf: self.command_buf.clone(),
+            cursor: self.cursor.clone(),
             eof: self.eof,
         }
     }
@@ -218,7 +316,8 @@ impl<R: BufRead + Debug> Debug for Parser<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Parser")
             .field("input", &self.input)
-            .field("line_buf", &String::from_utf8_lossy(&self.line_buf))
+            .field("command_buf", &self.command_buf)
+            .field("cursor", &self.cursor)
             .field("eof", &self.eof)
             .finish()
     }
@@ -226,25 +325,11 @@ impl<R: BufRead + Debug> Debug for Parser<R> {
 
 impl<R: BufRead + PartialEq> PartialEq for Parser<R> {
     fn eq(&self, other: &Self) -> bool {
-        self.input == other.input && self.line_buf == other.line_buf && self.eof == other.eof
+        self.input == other.input
+            && self.command_buf == other.command_buf
+            && self.cursor == other.cursor
+            && self.eof == other.eof
     }
 }
 
 impl<R: BufRead + Eq> Eq for Parser<R> {}
-
-impl ParseError {
-    #[inline]
-    fn new(kind: CommandErrorKind, line: &[u8]) -> Self {
-        ParseError::Command(CommandError::new(kind, line))
-    }
-}
-
-impl CommandError {
-    #[inline]
-    fn new(kind: CommandErrorKind, line: &[u8]) -> Self {
-        CommandError {
-            kind,
-            line: line.to_owned(),
-        }
-    }
-}
