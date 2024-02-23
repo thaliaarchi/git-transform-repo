@@ -1,10 +1,12 @@
-use std::num::NonZeroU64;
+use std::{io::BufRead, num::NonZeroU64};
 
 use thiserror::Error;
 
+use crate::parse::DataStream;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command<'a> {
-    Blob(Blob<'a>),
+pub enum Command<'a, R: BufRead> {
+    Blob(Blob<'a, R>),
     Commit(Commit<'a>),
     Tag(Tag<'a>),
     Reset(Reset<'a>),
@@ -20,10 +22,10 @@ pub enum Command<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Blob<'a> {
+pub struct Blob<'a, R: BufRead> {
     pub mark: Option<Mark>,
     pub original_oid: Option<OriginalOid<'a>>,
-    pub data: Data<'a>,
+    pub data: DataStream<'a, R>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,9 +100,7 @@ pub struct OptionOther<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Mark {
-    // Marks in fast-import are `uintmax_t`, which is guaranteed to be at least
-    // 64 bits.
-    pub mark: NonZeroU64,
+    pub mark: NonZeroU64, // uintmax_t in fast-import (at least u64)
 }
 
 impl Mark {
@@ -121,37 +121,51 @@ pub struct OriginalOid<'a> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Data<'a> {
-    pub data: &'a [u8],
-    pub delim: Option<&'a [u8]>,
+pub enum DataHeader<'a> {
+    Counted {
+        len: u64, // uintmax_t in fast-import (at least u64)
+    },
+    Delimited {
+        delim: &'a [u8],
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DataBuf {
+    pub data: Vec<u8>,
+    pub delim: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum DelimitedError {
-    #[error("data contains delimiter")]
-    ContainsDelim,
-    #[error("data does not end with LF ('\\n')")]
-    NoFinalLf,
-    // TODO: Verify this case.
-    #[error("data contains NUL ('\\0')")]
-    ContainsNul,
+    /// fast-import accepts opening, but not closing, delimiters that contain
+    /// NUL, so it will never close such data.
+    #[error("delimiter contains NUL ('\\0')")]
+    DelimContainsNul,
     /// fast-import accepts an empty delimiter, but receiving that is most
-    /// likely an error, so it is forbidden here.
+    /// likely an error, so we reject it.
     #[error("delimiter is empty")]
     EmptyDelim,
+    /// A line equal to the delimiter in the data will end the data early.
+    #[error("data contains delimiter")]
+    DataContainsDelim,
+    /// The close delimiter must appear at the start of a line, so only data
+    /// ending in LF can be delimited.
+    #[error("data does not end with LF ('\\n')")]
+    NoFinalLf,
 }
 
-impl Data<'_> {
+impl DataBuf {
     pub fn validate_delim(&self) -> Result<(), DelimitedError> {
-        if let Some(delim) = self.delim {
+        if let Some(delim) = &self.delim {
             if delim.is_empty() {
                 Err(DelimitedError::EmptyDelim)
-            } else if !matches!(self.data, [.., b'\n']) {
+            } else if delim.contains(&b'\0') {
+                Err(DelimitedError::DelimContainsNul)
+            } else if !self.data.ends_with(b"\n") {
                 Err(DelimitedError::NoFinalLf)
-            } else if self.data.contains(&b'\0') {
-                Err(DelimitedError::ContainsNul)
             } else if self.data.split(|&b| b == b'\n').any(|line| line == &*delim) {
-                Err(DelimitedError::ContainsDelim)
+                Err(DelimitedError::DataContainsDelim)
             } else {
                 Ok(())
             }

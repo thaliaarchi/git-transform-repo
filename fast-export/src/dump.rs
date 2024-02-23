@@ -1,18 +1,9 @@
 use std::io::{self, Write};
 
-use crate::command::{Blob, Data, FileSize, Mark, OptionGit, OptionOther, OriginalOid, UnitFactor};
+use crate::command::{DataBuf, FileSize, Mark, OptionGit, OptionOther, OriginalOid, UnitFactor};
 
 pub trait Dump {
     fn dump<W: Write>(&self, w: &mut W) -> io::Result<()>;
-}
-
-impl Dump for Blob<'_> {
-    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_all(b"blob\n")?;
-        self.mark.dump(w)?;
-        self.original_oid.dump(w)?;
-        self.data.dump(w)
-    }
 }
 
 impl Dump for OptionGit<'_> {
@@ -66,23 +57,23 @@ impl Dump for OriginalOid<'_> {
     }
 }
 
-impl Dump for Data<'_> {
+impl Dump for DataBuf {
     fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        if let Some(delim) = self.delim {
+        if let Some(delim) = &self.delim {
             // Dump it in the delimited style only if it would parse correctly
             // with the data.
             if self.validate_delim().is_ok() {
                 w.write_all(b"data <<")?;
                 w.write_all(delim)?;
                 w.write_all(b"\n")?;
-                w.write_all(self.data)?;
+                w.write_all(&self.data)?;
                 w.write_all(delim)?;
                 w.write_all(b"\n\n")?; // Second LF is optional
                 return Ok(());
             }
         }
         write!(w, "data {}\n", self.data.len())?;
-        w.write_all(self.data)?;
+        w.write_all(&self.data)?;
         w.write_all(b"\n") // Optional LF
     }
 }
@@ -122,16 +113,16 @@ mod tests {
     #[test]
     fn data() {
         assert_eq!(
-            dump(Data {
-                data: b"Hello, world!",
+            dump(DataBuf {
+                data: b"Hello, world!".to_vec(),
                 delim: None,
             }),
             b"data 13\nHello, world!\n",
         );
         assert_eq!(
-            dump(Data {
-                data: b"Hello, world!\n",
-                delim: Some(b"EOF"),
+            dump(DataBuf {
+                data: b"Hello, world!\n".to_vec(),
+                delim: Some(b"EOF".to_vec()),
             }),
             b"data <<EOF\nHello, world!\nEOF\n\n",
         );
@@ -140,30 +131,30 @@ mod tests {
     #[test]
     fn data_invalid_delim() {
         assert_eq!(
-            dump(Data {
-                data: b"Hello,\nEOF\nworld!\n", // Contains delim
-                delim: Some(b"EOF"),
+            dump(DataBuf {
+                data: b"Hello,\nEOF\nworld!\n".to_vec(), // Contains delim
+                delim: Some(b"EOF".to_vec()),
             }),
             b"data 18\nHello,\nEOF\nworld!\n\n",
         );
         assert_eq!(
-            dump(Data {
-                data: b"Hello, world!", // No final LF
-                delim: Some(b"EOF"),
+            dump(DataBuf {
+                data: b"Hello, world!".to_vec(), // No final LF
+                delim: Some(b"EOF".to_vec()),
             }),
             b"data 13\nHello, world!\n",
         );
         assert_eq!(
-            dump(Data {
-                data: b"Hello,\0world!\n", // Contains NUL
-                delim: Some(b"EOF"),
+            dump(DataBuf {
+                data: b"Hello, world!\n".to_vec(),
+                delim: Some(b"E\0F".to_vec()), // Contains NUL
             }),
-            b"data 14\nHello,\0world!\n\n",
+            b"data 14\nHello, world!\n\n",
         );
         assert_eq!(
-            dump(Data {
-                data: b"Hello, world!\n",
-                delim: Some(b""), // Empty delim
+            dump(DataBuf {
+                data: b"Hello, world!\n".to_vec(),
+                delim: Some(b"".to_vec()), // Empty delim
             }),
             b"data 14\nHello, world!\n\n",
         );

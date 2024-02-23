@@ -79,9 +79,10 @@ data_counted ::=
     int LF
     .{length} LF?
 # Consumes lines until the terminator string is found.
-# BUG: The heredoc can be empty.
+# BUG: The delimiter can be empty. The open delimiter may contain NUL, but the
+# closing delimiter may not.
 data_delimited ::=
-    "<<" (?<terminator> NOT_LF*) LF
+    "<<" (?<terminator> NOT_LF_NUL*) LF
     (NOT_LF* LF)*?
     \k<terminator> LF
 
