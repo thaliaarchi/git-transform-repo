@@ -54,7 +54,9 @@ pub enum Done {
 pub struct Alias<'a>(&'a ());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Progress<'a>(&'a ());
+pub struct Progress<'a> {
+    pub message: &'a [u8],
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Feature<'a>(&'a ());

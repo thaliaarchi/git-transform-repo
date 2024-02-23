@@ -3,5 +3,6 @@
 
 pub mod command;
 mod dump;
+pub mod parse;
 
 pub use dump::Dump;

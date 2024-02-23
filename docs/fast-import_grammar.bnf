@@ -8,8 +8,8 @@ command ::=
     | "get-mark " get_mark
     | "checkpoint" SEP
     | "done" SEP
-    | "alias" SEP alias
-    | "progress " progress
+    | "alias" LF? SEP alias
+    | "progress " NOT_LF_ONLY* LF? SEP
     | "feature " feature
     | "option git " option_git
     | "option " NOT_LF* SEP
@@ -37,8 +37,8 @@ objectish ::= branch | mark_ref
 # BUG: Empty branch is seemingly allowed.
 branch ::= NOT_LF*
 # Empty name and email are seemingly allowed.
-name ::= [^<>\n]*
-email ::= [^<>\n]*
+name ::= [^<>\n\0]*
+email ::= [^<>\n\0]*
 file_modify ::=
     "M " mode " " (file_modify_external | file_modify_inline)
 file_delete ::=
@@ -114,4 +114,6 @@ file_size ::= uint unit_factor
 SEP ::= LF COMMENTS
 COMMENTS ::= ("#" NOT_LF* (LF | EOF))*
 LF ::= "\n"
-NOT_LF ::= [^\n]
+NOT_LF ::= [^\n\0] # TODO review all uses
+NOT_LF_ONLY ::= [^\n]
+NOT_LF_NUL ::= [^\n\0]
