@@ -1,77 +1,86 @@
 use thiserror::Error;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command {
-    Blob(Blob),
-    Commit(Commit),
-    Tag(Tag),
-    Reset(Reset),
-    Ls(Ls),
-    CatBlob(CatBlob),
-    GetMark(GetMark),
-    Checkpoint(Checkpoint),
+pub enum Command<'a> {
+    Blob(Blob<'a>),
+    Commit(Commit<'a>),
+    Tag(Tag<'a>),
+    Reset(Reset<'a>),
+    Ls(Ls<'a>),
+    CatBlob(CatBlob<'a>),
+    GetMark(GetMark<'a>),
+    Checkpoint,
     Done(Done),
-    Alias(Alias),
-    Progress(Progress),
-    Feature(Feature),
-    OptionGit(OptionGit),
-    OptionOther(OptionOther),
+    Alias(Alias<'a>),
+    Progress(Progress<'a>),
+    Feature(Feature<'a>),
+    Option(OptionCommand<'a>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Blob {
+pub struct Blob<'a> {
     pub mark: Option<Mark>,
-    pub original_oid: Option<OriginalOid>,
-    pub data: Data,
+    pub original_oid: Option<OriginalOid<'a>>,
+    pub data: Data<'a>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Commit;
+pub struct Commit<'a>(&'a ());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Tag;
+pub struct Tag<'a>(&'a ());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Reset;
+pub struct Reset<'a>(&'a ());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ls;
+pub struct Ls<'a>(&'a ());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CatBlob;
+pub struct CatBlob<'a>(&'a ());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GetMark;
+pub struct GetMark<'a>(&'a ());
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Done {
+    /// The stream was explicitly terminated with a `done` command.
+    Explicit,
+    /// The stream was terminated with EOF.
+    Eof,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Checkpoint;
+pub struct Alias<'a>(&'a ());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Done;
+pub struct Progress<'a>(&'a ());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Alias;
+pub struct Feature<'a>(&'a ());
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Progress;
+pub enum OptionCommand<'a> {
+    Git(OptionGit<'a>),
+    Other(OptionOther<'a>),
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Feature;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OptionGit {
+pub enum OptionGit<'a> {
     MaxPackSize(FileSize),
     BigFileThreshold(FileSize),
     Depth(u32),
     ActiveBranches(u32),
-    ExportPackEdges(InlineString),
+    ExportPackEdges(&'a [u8]),
     Quiet,
     Stats,
     AllowUnsafeFeatures,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OptionOther(pub InlineString);
+pub struct OptionOther<'a> {
+    pub option: &'a [u8],
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
@@ -80,102 +89,48 @@ pub struct Mark {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OriginalOid {
-    pub oid: InlineString,
+pub struct OriginalOid<'a> {
+    pub oid: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Data {
-    Counted(CountedData),
-    Delimited(DelimitedData),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CountedData {
-    pub data: Vec<u8>,
-    pub optional_lf: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DelimitedData {
-    data: Box<[u8]>,
-    delim: Box<[u8]>,
-    pub optional_lf: bool,
+pub struct Data<'a> {
+    pub data: &'a [u8],
+    pub delim: Option<&'a [u8]>,
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum DelimitedError {
     #[error("data contains delimiter")]
     ContainsDelim,
-    #[error("data contains NUL ('\\0')")]
-    ContainsNul,
     #[error("data does not end with LF ('\\n')")]
     NoFinalLf,
+    // TODO: Verify this case.
+    #[error("data contains NUL ('\\0')")]
+    ContainsNul,
+    /// fast-import accepts an empty delimiter, but receiving that is most
+    /// likely an error, so it is forbidden here.
+    #[error("delimiter is empty")]
+    EmptyDelim,
 }
 
-impl CountedData {
-    #[inline]
-    #[must_use]
-    pub fn new<T: Into<Vec<u8>>>(data: T) -> Self {
-        CountedData {
-            data: data.into(),
-            optional_lf: true,
-        }
-    }
-}
-
-impl DelimitedData {
-    #[inline]
-    pub fn new<T: Into<Vec<u8>>>(data: T, delim: InlineString) -> Result<Self, DelimitedError> {
-        DelimitedData::_new(data.into().into_boxed_slice(), delim.bytes)
-    }
-
-    fn _new(data: Box<[u8]>, delim: Box<[u8]>) -> Result<Self, DelimitedError> {
-        if data.last().is_some_and(|&b| b != b'\n') {
-            Err(DelimitedError::NoFinalLf)
-        } else if data.contains(&b'\0') {
-            Err(DelimitedError::ContainsNul)
-        } else if data.split(|&b| b == b'\n').any(|line| line == &*delim) {
-            Err(DelimitedError::ContainsDelim)
+impl Data<'_> {
+    pub fn validate_delim(&self) -> Result<(), DelimitedError> {
+        if let Some(delim) = self.delim {
+            if delim.is_empty() {
+                Err(DelimitedError::EmptyDelim)
+            } else if !matches!(self.data, [.., b'\n']) {
+                Err(DelimitedError::NoFinalLf)
+            } else if self.data.contains(&b'\0') {
+                Err(DelimitedError::ContainsNul)
+            } else if self.data.split(|&b| b == b'\n').any(|line| line == &*delim) {
+                Err(DelimitedError::ContainsDelim)
+            } else {
+                Ok(())
+            }
         } else {
-            Ok(DelimitedData {
-                data,
-                delim,
-                optional_lf: true,
-            })
+            Ok(())
         }
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn data(&self) -> &[u8] {
-        &self.data
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn into_data(self) -> Vec<u8> {
-        self.data.into_vec()
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn delim(&self) -> &[u8] {
-        &self.delim
-    }
-}
-
-impl From<CountedData> for Data {
-    #[inline]
-    fn from(data: CountedData) -> Self {
-        Data::Counted(data)
-    }
-}
-
-impl From<DelimitedData> for Data {
-    #[inline]
-    fn from(data: DelimitedData) -> Self {
-        Data::Delimited(data)
     }
 }
 
@@ -191,71 +146,4 @@ pub enum UnitFactor {
     K,
     M,
     G,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct InlineString {
-    bytes: Box<[u8]>,
-}
-
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub enum InlineStringError {
-    #[error("inline string contains NUL ('\\0')")]
-    ContainsNul,
-    #[error("inline string contains LF ('\\n')")]
-    ContainsLf,
-}
-
-impl InlineString {
-    #[inline]
-    pub fn new<T: Into<Vec<u8>>>(bytes: T) -> Result<Self, InlineStringError> {
-        InlineString::_new(bytes.into().into_boxed_slice())
-    }
-
-    fn _new(bytes: Box<[u8]>) -> Result<Self, InlineStringError> {
-        if let Some(&b) = bytes.iter().find(|&&b| b == b'\0' || b == b'\n') {
-            Err(if b == b'\0' {
-                InlineStringError::ContainsNul
-            } else {
-                InlineStringError::ContainsLf
-            })
-        } else {
-            Ok(InlineString { bytes })
-        }
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
-    #[inline]
-    #[must_use]
-    pub fn into_bytes(self) -> Vec<u8> {
-        self.bytes.into_vec()
-    }
-}
-
-impl TryFrom<Vec<u8>> for InlineString {
-    type Error = InlineStringError;
-
-    #[inline]
-    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-        InlineString::new(bytes)
-    }
-}
-
-impl PartialEq<[u8]> for InlineString {
-    #[inline]
-    fn eq(&self, other: &[u8]) -> bool {
-        self.as_bytes() == other
-    }
-}
-
-impl PartialEq<InlineString> for [u8] {
-    #[inline]
-    fn eq(&self, other: &InlineString) -> bool {
-        self == other.as_bytes()
-    }
 }

@@ -1,15 +1,12 @@
 use std::io::{self, Write};
 
-use crate::{
-    Blob, CountedData, Data, DelimitedData, FileSize, InlineString, Mark, OptionGit, OptionOther,
-    OriginalOid, UnitFactor,
-};
+use crate::ast::{Blob, Data, FileSize, Mark, OptionGit, OptionOther, OriginalOid, UnitFactor};
 
 pub trait Pretty {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()>;
 }
 
-impl Pretty for Blob {
+impl Pretty for Blob<'_> {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"blob\n")?;
         self.mark.pretty(w)?;
@@ -18,11 +15,11 @@ impl Pretty for Blob {
     }
 }
 
-impl Pretty for OptionGit {
+impl Pretty for OptionGit<'_> {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
         // Positive sign and leading zeros are not preserved from the source.
         w.write_all(b"option git ")?;
-        match self {
+        match *self {
             OptionGit::MaxPackSize(n) => {
                 w.write_all(b"--max-pack-size=")?;
                 n.pretty(w)?;
@@ -37,7 +34,7 @@ impl Pretty for OptionGit {
             OptionGit::ActiveBranches(n) => write!(w, "--active-branches={n}\n"),
             OptionGit::ExportPackEdges(file) => {
                 write!(w, "--export-pack-edges=")?;
-                file.pretty(w)?;
+                w.write_all(file)?;
                 w.write_all(b"\n")
             }
             OptionGit::Quiet => w.write_all(b"--quiet\n"),
@@ -47,10 +44,11 @@ impl Pretty for OptionGit {
     }
 }
 
-impl Pretty for OptionOther {
+impl Pretty for OptionOther<'_> {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"option ")?;
-        self.0.pretty(w)
+        w.write_all(self.option)?;
+        w.write_all(b"\n")
     }
 }
 
@@ -60,46 +58,32 @@ impl Pretty for Mark {
     }
 }
 
-impl Pretty for OriginalOid {
+impl Pretty for OriginalOid<'_> {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"original-oid ")?;
-        w.write_all(self.oid.as_bytes())?;
+        w.write_all(self.oid)?;
         w.write_all(b"\n")
     }
 }
 
-impl Pretty for Data {
+impl Pretty for Data<'_> {
     fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        match self {
-            Data::Counted(data) => data.pretty(w),
-            Data::Delimited(data) => data.pretty(w),
+        if let Some(delim) = self.delim {
+            // Dump it in the delimited style only if it would parse correctly
+            // with the data.
+            if self.validate_delim().is_ok() {
+                w.write_all(b"data <<")?;
+                w.write_all(delim)?;
+                w.write_all(b"\n")?;
+                w.write_all(self.data)?;
+                w.write_all(delim)?;
+                w.write_all(b"\n\n")?; // Second LF is optional
+                return Ok(());
+            }
         }
-    }
-}
-
-impl Pretty for CountedData {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write!(w, "data {}\n", self.data.len())?;
-        w.write_all(&self.data)?;
-        if self.optional_lf {
-            w.write_all(b"\n")?;
-        }
-        Ok(())
-    }
-}
-
-impl Pretty for DelimitedData {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_all(b"data <<")?;
-        w.write_all(self.delim())?;
-        w.write_all(b"\n")?;
-        w.write_all(self.data())?;
-        w.write_all(self.delim())?;
-        w.write_all(b"\n")?;
-        if self.optional_lf {
-            w.write_all(b"\n")?;
-        }
-        Ok(())
+        w.write_all(self.data)?;
+        w.write_all(b"\n") // Optional LF
     }
 }
 
@@ -113,12 +97,6 @@ impl Pretty for FileSize {
             UnitFactor::M => w.write_all(b"m"),
             UnitFactor::G => w.write_all(b"g"),
         }
-    }
-}
-
-impl Pretty for InlineString {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        w.write_all(self.as_bytes())
     }
 }
 
@@ -142,25 +120,52 @@ mod tests {
     }
 
     #[test]
-    fn counted_data() {
+    fn data() {
         assert_eq!(
-            pretty(CountedData::new(b"Hello, world!")),
+            pretty(Data {
+                data: b"Hello, world!",
+                delim: None,
+            }),
             b"data 13\nHello, world!\n",
+        );
+        assert_eq!(
+            pretty(Data {
+                data: b"Hello, world!\n",
+                delim: Some(b"EOF"),
+            }),
+            b"data <<EOF\nHello, world!\nEOF\n\n",
         );
     }
 
     #[test]
-    fn delimited_data() {
-        // Empty delimiter is allowed by git fast-import:
-        // assert_eq!(
-        //     pretty(DelimitedData::new("Hello, world!\n", InlineString::new(b"").unwrap()).unwrap()),
-        //     b"data <<\nHello, world!\n\n\n",
-        // );
+    fn data_invalid_delim() {
         assert_eq!(
-            pretty(
-                DelimitedData::new("Hello, world!\n", InlineString::new(b"EOF").unwrap()).unwrap(),
-            ),
-            b"data <<EOF\nHello, world!\nEOF\n\n",
+            pretty(Data {
+                data: b"Hello,\nEOF\nworld!\n", // Contains delim
+                delim: Some(b"EOF"),
+            }),
+            b"data 18\nHello,\nEOF\nworld!\n\n",
+        );
+        assert_eq!(
+            pretty(Data {
+                data: b"Hello, world!", // No final LF
+                delim: Some(b"EOF"),
+            }),
+            b"data 13\nHello, world!\n",
+        );
+        assert_eq!(
+            pretty(Data {
+                data: b"Hello,\0world!\n", // Contains NUL
+                delim: Some(b"EOF"),
+            }),
+            b"data 14\nHello,\0world!\n\n",
+        );
+        assert_eq!(
+            pretty(Data {
+                data: b"Hello, world!\n",
+                delim: Some(b""), // Empty delim
+            }),
+            b"data 14\nHello, world!\n\n",
         );
     }
 
@@ -170,8 +175,10 @@ mod tests {
     #[test]
     fn option_other() {
         assert_eq!(
-            pretty(OptionOther(InlineString::new(b"vcs some config").unwrap())),
-            b"option vcs some config",
+            pretty(OptionOther {
+                option: b"vcs some config",
+            }),
+            b"option vcs some config\n",
         );
     }
 }
