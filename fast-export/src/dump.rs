@@ -1,33 +1,33 @@
 use std::io::{self, Write};
 
-use crate::ast::{Blob, Data, FileSize, Mark, OptionGit, OptionOther, OriginalOid, UnitFactor};
+use crate::command::{Blob, Data, FileSize, Mark, OptionGit, OptionOther, OriginalOid, UnitFactor};
 
-pub trait Pretty {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()>;
+pub trait Dump {
+    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()>;
 }
 
-impl Pretty for Blob<'_> {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl Dump for Blob<'_> {
+    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"blob\n")?;
-        self.mark.pretty(w)?;
-        self.original_oid.pretty(w)?;
-        self.data.pretty(w)
+        self.mark.dump(w)?;
+        self.original_oid.dump(w)?;
+        self.data.dump(w)
     }
 }
 
-impl Pretty for OptionGit<'_> {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl Dump for OptionGit<'_> {
+    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         // Positive sign and leading zeros are not preserved from the source.
         w.write_all(b"option git ")?;
         match *self {
             OptionGit::MaxPackSize(n) => {
                 w.write_all(b"--max-pack-size=")?;
-                n.pretty(w)?;
+                n.dump(w)?;
                 w.write_all(b"\n")
             }
             OptionGit::BigFileThreshold(n) => {
                 w.write_all(b"--big-file-threshold=")?;
-                n.pretty(w)?;
+                n.dump(w)?;
                 w.write_all(b"\n")
             }
             OptionGit::Depth(n) => write!(w, "--depth={n}\n"),
@@ -44,30 +44,30 @@ impl Pretty for OptionGit<'_> {
     }
 }
 
-impl Pretty for OptionOther<'_> {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl Dump for OptionOther<'_> {
+    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"option ")?;
         w.write_all(self.option)?;
         w.write_all(b"\n")
     }
 }
 
-impl Pretty for Mark {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl Dump for Mark {
+    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         write!(w, "mark :{}\n", self.mark)
     }
 }
 
-impl Pretty for OriginalOid<'_> {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl Dump for OriginalOid<'_> {
+    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"original-oid ")?;
         w.write_all(self.oid)?;
         w.write_all(b"\n")
     }
 }
 
-impl Pretty for Data<'_> {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl Dump for Data<'_> {
+    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         if let Some(delim) = self.delim {
             // Dump it in the delimited style only if it would parse correctly
             // with the data.
@@ -87,8 +87,8 @@ impl Pretty for Data<'_> {
     }
 }
 
-impl Pretty for FileSize {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl Dump for FileSize {
+    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         // Case is not preserved from the source.
         write!(w, "{}", self.value)?;
         match self.unit {
@@ -100,10 +100,10 @@ impl Pretty for FileSize {
     }
 }
 
-impl<T: Pretty> Pretty for Option<T> {
-    fn pretty<W: Write>(&self, w: &mut W) -> io::Result<()> {
+impl<T: Dump> Dump for Option<T> {
+    fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         if let Some(value) = self {
-            value.pretty(w)?;
+            value.dump(w)?;
         }
         Ok(())
     }
@@ -113,23 +113,23 @@ impl<T: Pretty> Pretty for Option<T> {
 mod tests {
     use super::*;
 
-    fn pretty<T: Pretty>(value: T) -> Vec<u8> {
+    fn dump<T: Dump>(value: T) -> Vec<u8> {
         let mut buf = Vec::new();
-        value.pretty(&mut buf).unwrap();
+        value.dump(&mut buf).unwrap();
         buf
     }
 
     #[test]
     fn data() {
         assert_eq!(
-            pretty(Data {
+            dump(Data {
                 data: b"Hello, world!",
                 delim: None,
             }),
             b"data 13\nHello, world!\n",
         );
         assert_eq!(
-            pretty(Data {
+            dump(Data {
                 data: b"Hello, world!\n",
                 delim: Some(b"EOF"),
             }),
@@ -140,28 +140,28 @@ mod tests {
     #[test]
     fn data_invalid_delim() {
         assert_eq!(
-            pretty(Data {
+            dump(Data {
                 data: b"Hello,\nEOF\nworld!\n", // Contains delim
                 delim: Some(b"EOF"),
             }),
             b"data 18\nHello,\nEOF\nworld!\n\n",
         );
         assert_eq!(
-            pretty(Data {
+            dump(Data {
                 data: b"Hello, world!", // No final LF
                 delim: Some(b"EOF"),
             }),
             b"data 13\nHello, world!\n",
         );
         assert_eq!(
-            pretty(Data {
+            dump(Data {
                 data: b"Hello,\0world!\n", // Contains NUL
                 delim: Some(b"EOF"),
             }),
             b"data 14\nHello,\0world!\n\n",
         );
         assert_eq!(
-            pretty(Data {
+            dump(Data {
                 data: b"Hello, world!\n",
                 delim: Some(b""), // Empty delim
             }),
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn option_other() {
         assert_eq!(
-            pretty(OptionOther {
+            dump(OptionOther {
                 option: b"vcs some config",
             }),
             b"option vcs some config\n",
