@@ -502,8 +502,8 @@ impl<R: BufRead> Parser<R> {
                     }
                     let delim_line_buf = self.delim_line_buf.get_mut();
                     delim_line_buf.clear();
-                    Parser::bump_line_raw(input, delim_line_buf)?;
-                    if delim_line_buf == delim {
+                    let line_span = Parser::bump_line_raw(input, delim_line_buf)?;
+                    if &delim_line_buf[Range::from(line_span)] == delim {
                         break;
                     }
                 }
