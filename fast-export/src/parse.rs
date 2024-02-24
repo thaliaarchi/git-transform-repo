@@ -367,32 +367,26 @@ impl<R: BufRead> Parser<R> {
             return Err(self.err(ErrorKind::ExpectedDataCommand));
         }
         debug_assert!(self.data_state.is_none(), "unaccounted 'data' command");
-        if self.eat_prefix(b"<<") {
+        let header = if self.eat_prefix(b"<<") {
             let delim_span = self.cursor;
             if delim_span.is_empty() {
-                Err(self.err(ErrorKind::EmptyDelim))
+                return Err(self.err(ErrorKind::EmptyDelim));
             } else if self.get(delim_span).contains(&b'\0') {
-                Err(self.err(ErrorKind::DataDelimContainsNul))
-            } else {
-                let header = DataSpan::Delimited { delim: delim_span };
-                self.data_state = Some(DataState {
-                    reading_data: AtomicBool::new(false),
-                    header: UnsafeCell::new(header),
-                    delim_line_offset: UnsafeCell::new(0),
-                });
-                Ok(header)
+                return Err(self.err(ErrorKind::DataDelimContainsNul));
             }
+            DataSpan::Delimited { delim: delim_span }
         } else {
             let len = parse_u64(self.line_remaining())
                 .ok_or_else(|| self.err(ErrorKind::InvalidDataLength))?;
-            let header = DataSpan::Counted { len };
-            self.data_state = Some(DataState {
-                reading_data: AtomicBool::new(false),
-                header: UnsafeCell::new(header),
-                delim_line_offset: UnsafeCell::new(0), // Not applicable here
-            });
-            Ok(header)
-        }
+            DataSpan::Counted { len }
+        };
+        self.cursor.start = self.cursor.end;
+        self.data_state = Some(DataState {
+            reading_data: AtomicBool::new(false),
+            header: UnsafeCell::new(header),
+            delim_line_offset: UnsafeCell::new(0),
+        });
+        Ok(header)
     }
 
     /// Reads from the current data stream into the given buffer.
@@ -448,7 +442,7 @@ impl<R: BufRead> Parser<R> {
                 if *delim_line_offset >= delim_line_buf.len() && !input.eof {
                     delim_line_buf.clear();
                     *delim_line_offset = 0;
-                    Parser::bump_line_raw(input, delim_line_buf)?;
+                    input.read_line(delim_line_buf)?;
                     if delim_line_buf == self.get(*delim_span) {
                         // Mark the delimiter as done.
                         *delim_span = Span::from(0..0);
@@ -502,7 +496,7 @@ impl<R: BufRead> Parser<R> {
                     }
                     let delim_line_buf = self.delim_line_buf.get_mut();
                     delim_line_buf.clear();
-                    let line_span = Parser::bump_line_raw(input, delim_line_buf)?;
+                    let line_span = input.read_line(delim_line_buf)?;
                     if &delim_line_buf[Range::from(line_span)] == delim {
                         break;
                     }
@@ -520,32 +514,13 @@ impl<R: BufRead> Parser<R> {
     // Corresponds to `read_next_command` in fast-import.c.
     fn bump_line(&mut self) -> io::Result<()> {
         while !self.input.get_mut().eof {
-            self.cursor = Parser::bump_line_raw(self.input.get_mut(), &mut self.command_buf)?;
+            self.cursor = self.input.get_mut().read_line(&mut self.command_buf)?;
             match self.get(self.cursor) {
                 [b'#', ..] => continue,
                 _ => break,
             }
         }
         Ok(())
-    }
-
-    /// Reads a line from `input` into `buf`, stripping the LF delimiter. Lines
-    /// may contain any bytes (including NUL), except for LF.
-    ///
-    // Corresponds to `strbuf_getline_lf` in strbuf.c.
-    #[inline(always)]
-    fn bump_line_raw(input: &mut Input<R>, buf: &mut Vec<u8>) -> io::Result<Span> {
-        debug_assert!(!input.eof, "already at EOF");
-        let start = buf.len();
-        input.r.read_until(b'\n', buf)?;
-        let mut end = buf.len();
-        if let [.., b'\n'] = &buf[start..] {
-            end -= 1;
-        } else {
-            // EOF is reached in `read_until` iff the delimiter is not included.
-            input.eof = true;
-        }
-        Ok(Span::from(start..end))
     }
 
     // Corresponds to `skip_optional_lf` in fast-import.c.
@@ -650,6 +625,27 @@ impl From<Span> for Range<usize> {
 impl Debug for Span {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}..{}", self.start, self.end)
+    }
+}
+
+impl<R: BufRead> Input<R> {
+    /// Reads a line from `input` into `buf`, stripping the LF delimiter. Lines
+    /// may contain any bytes (including NUL), except for LF.
+    ///
+    // Corresponds to `strbuf_getline_lf` in strbuf.c.
+    #[inline(always)]
+    fn read_line(&mut self, buf: &mut Vec<u8>) -> io::Result<Span> {
+        debug_assert!(!self.eof, "already at EOF");
+        let start = buf.len();
+        self.r.read_until(b'\n', buf)?;
+        let mut end = buf.len();
+        if let [.., b'\n'] = &buf[start..] {
+            end -= 1;
+        } else {
+            // EOF is reached in `read_until` iff the delimiter is not included.
+            self.eof = true;
+        }
+        Ok(Span::from(start..end))
     }
 }
 
