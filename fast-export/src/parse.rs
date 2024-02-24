@@ -54,6 +54,9 @@ pub struct Parser<R: BufRead> {
     /// guarded by `DataState::reading_data`. This is under `Parser`, instead of
     /// `DataState`, so it can be reused between data streams.
     delim_line_buf: UnsafeCell<Vec<u8>>,
+
+    /// Whether the previous command ended with an optional LF.
+    has_optional_lf: bool,
 }
 
 // SAFETY: All `UnsafeCell` fields are guaranteed only be modified by a single
@@ -193,6 +196,9 @@ pub enum ParseErrorKind {
     /// The command is not recognized.
     #[error("unsupported command")]
     UnsupportedCommand,
+    /// Unexpected blank line instead of a command.
+    #[error("unexpected blank line")]
+    UnexpectedBlank,
 }
 
 use ParseErrorKind as ErrorKind;
@@ -209,6 +215,7 @@ impl<R: BufRead> Parser<R> {
             cursor: Span::from(0..0),
             data_state: None,
             delim_line_buf: UnsafeCell::new(Vec::new()),
+            has_optional_lf: false,
         }
     }
 
@@ -226,10 +233,20 @@ impl<R: BufRead> Parser<R> {
 
         self.command_buf.clear();
         self.bump_command()?;
+
+        // Consume an optional trailing LF from the previous command.
+        if self.has_optional_lf {
+            self.has_optional_lf = false;
+            if self.line_remaining().is_empty() {
+                self.command_buf.clear();
+                self.bump_command()?;
+            }
+        }
+
         if self.input.get_mut().eof {
             return Ok(Command::Done(Done::Eof));
         }
-        if self.eat_all(b"blob") {
+        if self.eat_if_equals(b"blob") {
             self.parse_blob()
         } else if self.eat_prefix(b"commit ") {
             self.parse_commit()
@@ -243,11 +260,11 @@ impl<R: BufRead> Parser<R> {
             self.parse_cat_blob()
         } else if self.eat_prefix(b"get-mark ") {
             self.parse_get_mark()
-        } else if self.eat_all(b"checkpoint") {
+        } else if self.eat_if_equals(b"checkpoint") {
             self.parse_checkpoint()
-        } else if self.eat_all(b"done") {
+        } else if self.eat_if_equals(b"done") {
             Ok(Command::Done(Done::Explicit))
-        } else if self.eat_all(b"alias") {
+        } else if self.eat_if_equals(b"alias") {
             self.parse_alias()
         } else if self.eat_prefix(b"progress ") {
             self.parse_progress()
@@ -255,6 +272,8 @@ impl<R: BufRead> Parser<R> {
             self.parse_feature()
         } else if self.eat_prefix(b"option ") {
             self.parse_option()
+        } else if self.line_remaining().is_empty() {
+            Err(self.err(ErrorKind::UnexpectedBlank))
         } else {
             Err(self.err(ErrorKind::UnsupportedCommand))
         }
@@ -309,7 +328,8 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_checkpoint` in fast-import.c.
     fn parse_checkpoint(&mut self) -> Result<Command<'_, R>> {
-        todo!()
+        self.has_optional_lf = true;
+        Ok(Command::Checkpoint)
     }
 
     // Corresponds to `parse_alias` in fast-import.c.
@@ -319,10 +339,9 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_progress` in fast-import.c.
     fn parse_progress(&mut self) -> Result<Command<'_, R>> {
-        let message_span = self.cursor;
-        self.skip_optional_lf()?;
+        self.has_optional_lf = true;
         Ok(Command::Progress(Progress {
-            message: self.get(message_span),
+            message: self.line_remaining(),
         }))
     }
 
@@ -386,7 +405,7 @@ impl<R: BufRead> Parser<R> {
                 .ok_or_else(|| self.err(ErrorKind::InvalidDataLength))?;
             DataSpan::Counted { len }
         };
-        self.cursor.start = self.cursor.end;
+        self.has_optional_lf = true;
         self.data_state = Some(DataState {
             reading_data: AtomicBool::new(false),
             header: UnsafeCell::new(header),
@@ -519,19 +538,17 @@ impl<R: BufRead> Parser<R> {
     ///
     // Corresponds to `read_next_command` in fast-import.c.
     fn bump_command(&mut self) -> io::Result<()> {
-        while !self.input.get_mut().eof {
+        if self.input.get_mut().eof {
+            self.cursor.start = self.cursor.end;
+            return Ok(());
+        }
+        loop {
             self.cursor = self.input.get_mut().read_line(&mut self.command_buf)?;
-            match self.get(self.cursor) {
-                [b'#', ..] => continue,
-                _ => break,
+            if !self.get(self.cursor).starts_with(b"#") || self.input.get_mut().eof {
+                break;
             }
         }
         Ok(())
-    }
-
-    // Corresponds to `skip_optional_lf` in fast-import.c.
-    fn skip_optional_lf(&mut self) -> io::Result<()> {
-        todo!()
     }
 
     /// Returns the text in the command at the cursor.
@@ -563,7 +580,7 @@ impl<R: BufRead> Parser<R> {
     /// Consumes the remainder of the current line, if it matches the bytes, and
     /// returns whether the cursor was bumped.
     #[inline(always)]
-    fn eat_all(&mut self, b: &[u8]) -> bool {
+    fn eat_if_equals(&mut self, b: &[u8]) -> bool {
         if self.line_remaining() == b {
             self.cursor.start = self.cursor.end;
             true
@@ -600,6 +617,7 @@ impl<R: BufRead + Debug> Debug for Parser<R> {
             .field("cursor", &self.cursor)
             .field("data_state", &self.data_state)
             .field("delim_line_buf", &self.delim_line_buf)
+            .field("has_optional_lf", &self.has_optional_lf)
             .finish()
     }
 }
@@ -797,27 +815,35 @@ mod tests {
 
     #[test]
     fn parse_counted_blob_read_stream() {
-        parse_counted_blob(true);
+        parse_counted_blob(true, true);
+        parse_counted_blob(true, false);
     }
 
     #[test]
     fn parse_counted_blob_skip_stream() {
-        parse_counted_blob(false);
+        parse_counted_blob(false, true);
+        parse_counted_blob(false, false);
     }
 
     #[test]
     fn parse_delimited_blob_read_stream() {
-        parse_delimited_blob(true);
+        parse_delimited_blob(true, true);
+        parse_delimited_blob(true, false);
     }
 
     #[test]
     fn parse_delimited_blob_skip_stream() {
-        parse_delimited_blob(false);
+        parse_delimited_blob(false, true);
+        parse_delimited_blob(false, false);
     }
 
-    fn parse_counted_blob(read_all: bool) {
-        let input = &mut &b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata 14\nHello, world!\n"[..];
-        let mut parser = Parser::new(input);
+    fn parse_counted_blob(read_all: bool, optional_lf: bool) {
+        let mut input = b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata 14\nHello, world!\n".to_vec();
+        if optional_lf {
+            input.push(b'\n');
+        }
+        let mut input = &input[..];
+        let mut parser = Parser::new(&mut input);
 
         let command = parser.next().unwrap();
         let Command::Blob(blob) = command else {
@@ -841,12 +867,24 @@ mod tests {
             assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
         }
 
-        assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
+        match parser.next() {
+            Ok(command) => {
+                assert_eq!(command, Command::Done(Done::Eof));
+            }
+            Err(err) => {
+                println!("remainder: {:?}", parser.input.get_mut().r.as_bstr());
+                panic!("done: {err:?}");
+            }
+        }
     }
 
-    fn parse_delimited_blob(read_all: bool) {
-        let input = &mut &b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata <<EOF\nHello, world!\nEOF\n"[..];
-        let mut parser = Parser::new(input);
+    fn parse_delimited_blob(read_all: bool, optional_lf: bool) {
+        let mut input = b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata <<EOF\nHello, world!\nEOF\n".to_vec();
+        if optional_lf {
+            input.push(b'\n');
+        }
+        let mut input = &input[..];
+        let mut parser = Parser::new(&mut input);
 
         let command = parser.next().unwrap();
         let Command::Blob(blob) = command else {
@@ -870,6 +908,14 @@ mod tests {
             assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
         }
 
-        assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
+        match parser.next() {
+            Ok(command) => {
+                assert_eq!(command, Command::Done(Done::Eof));
+            }
+            Err(err) => {
+                println!("remainder: {:?}", parser.input.get_mut().r.as_bstr());
+                panic!("done: {err:?}");
+            }
+        }
     }
 }
