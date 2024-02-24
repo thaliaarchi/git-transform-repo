@@ -458,24 +458,25 @@ impl<R: BufRead> Parser<R> {
                 Ok(n)
             }
             DataSpan::Delimited { delim: delim_span } => {
-                if delim_span.is_empty() {
-                    // An empty delimiter is repurposed to mean EOF has been
-                    // reached, since empty delimiters are forbidden (see
-                    // `ErrorKind::EmptyDelim`).
-                    return Ok(0);
-                }
-                if *delim_line_offset >= delim_line_buf.len() && !input.eof {
+                let delim = &self.command_buf[Range::from(*delim_span)];
+                if *delim_line_offset >= delim_line_buf.len() {
+                    if input.eof {
+                        if delim.is_empty() {
+                            // Keep returning EOF if called repeatedly after the
+                            // first EOF.
+                            return Ok(0);
+                        }
+                        return Err(self.err(ErrorKind::UnterminatedData));
+                    }
                     delim_line_buf.clear();
                     *delim_line_offset = 0;
-                    input.read_line(delim_line_buf)?;
-                    if delim_line_buf == self.get(*delim_span) {
-                        // Mark the delimiter as done.
-                        *delim_span = Span::from(0..0);
+                    let line_span = input.read_line(delim_line_buf)?;
+                    if &delim_line_buf[Range::from(line_span)] == delim {
+                        // Clear the delimiter to signal EOF. An empty delimiter
+                        // is forbidden, so this avoids an auxiliary field.
+                        delim_span.start = delim_span.end;
                         return Ok(0);
                     }
-                }
-                if input.eof {
-                    return Err(self.err(ErrorKind::UnterminatedData));
                 }
                 let offset = *delim_line_offset;
                 let n = (delim_line_buf.len() - offset).min(buf.len());
@@ -493,6 +494,13 @@ impl<R: BufRead> Parser<R> {
         };
         // TODO: Evaluate this ordering.
         if data_state.reading_data.load(Ordering::SeqCst) {
+            let reached_eof = match *data_state.header.get_mut() {
+                DataSpan::Counted { len } => len == 0,
+                DataSpan::Delimited { delim } => delim.is_empty(),
+            };
+            if reached_eof {
+                return Ok(());
+            }
             return Err(self.err(ErrorKind::UnfinishedData));
         }
         let input = self.input.get_mut();
@@ -867,15 +875,8 @@ mod tests {
             assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
         }
 
-        match parser.next() {
-            Ok(command) => {
-                assert_eq!(command, Command::Done(Done::Eof));
-            }
-            Err(err) => {
-                println!("remainder: {:?}", parser.input.get_mut().r.as_bstr());
-                panic!("done: {err:?}");
-            }
-        }
+        assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
+        assert!(parser.input.get_mut().r.is_empty());
     }
 
     fn parse_delimited_blob(read_all: bool, optional_lf: bool) {
@@ -908,14 +909,7 @@ mod tests {
             assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
         }
 
-        match parser.next() {
-            Ok(command) => {
-                assert_eq!(command, Command::Done(Done::Eof));
-            }
-            Err(err) => {
-                println!("remainder: {:?}", parser.input.get_mut().r.as_bstr());
-                panic!("done: {err:?}");
-            }
-        }
+        assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
+        assert!(parser.input.get_mut().r.is_empty());
     }
 }
