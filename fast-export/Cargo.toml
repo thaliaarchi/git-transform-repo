@@ -9,4 +9,5 @@ keywords = ["git", "fast-export", "fast-import"]
 categories = ["development-tools"]
 
 [dependencies]
+bstr = "1.9.0"
 thiserror = "1.0.57"

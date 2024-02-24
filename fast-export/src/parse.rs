@@ -7,6 +7,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use bstr::ByteSlice;
 use thiserror::Error;
 
 use crate::command::{Blob, Command, DataHeader, Done, Mark, OriginalOid, Progress};
@@ -132,8 +133,8 @@ pub enum ParseError {
 }
 
 /// An error from parsing a command in a fast-export stream.
-#[derive(Clone, Debug, Error, PartialEq, Eq, Hash)]
-#[error("{kind}: {}", String::from_utf8_lossy(line))]
+#[derive(Clone, Error, PartialEq, Eq, Hash)]
+#[error("{kind}: {:?}", line.as_bstr())]
 pub struct CommandError {
     pub kind: CommandErrorKind,
     pub line: Vec<u8>,
@@ -495,10 +496,9 @@ impl<R: BufRead> Parser<R> {
 
 impl<R: BufRead + Debug> Debug for Parser<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        // TODO: Print with/like bstr.
         f.debug_struct("Parser")
             .field("input", &self.input)
-            .field("command_buf", &self.command_buf)
+            .field("command_buf", &self.command_buf.as_bstr())
             .field("cursor", &self.cursor)
             .field("data_state", &self.data_state)
             .field("delim_line_buf", &self.delim_line_buf)
@@ -675,6 +675,15 @@ impl<'a, R: BufRead> Read for DataReader<'a, R> {
     }
 }
 
+impl Debug for CommandError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommandError")
+            .field("kind", &self.kind)
+            .field("line", &self.line.as_bstr())
+            .finish()
+    }
+}
+
 impl From<io::ErrorKind> for ParseError {
     #[inline]
     fn from(kind: io::ErrorKind) -> Self {
@@ -705,6 +714,8 @@ fn parse_u64(b: &[u8]) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use std::io::Read;
+
+    use bstr::ByteSlice;
 
     use crate::{
         command::{Command, DataHeader, Done, Mark, OriginalOid},
@@ -752,7 +763,7 @@ mod tests {
             let mut r = blob.data.open().unwrap();
             let mut buf = Vec::new();
             r.read_to_end(&mut buf).unwrap();
-            assert_eq!(buf, b"Hello, world!\n");
+            assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr());
         }
 
         assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
@@ -779,7 +790,7 @@ mod tests {
             let mut r = blob.data.open().unwrap();
             let mut buf = Vec::new();
             r.read_to_end(&mut buf).unwrap();
-            assert_eq!(buf, b"Hello, world!\n");
+            assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr());
         }
 
         assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));

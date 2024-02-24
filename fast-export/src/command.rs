@@ -1,5 +1,10 @@
-use std::{io::BufRead, num::NonZeroU64};
+use std::{
+    fmt::{self, Debug, Formatter},
+    io::BufRead,
+    num::NonZeroU64,
+};
 
+use bstr::ByteSlice;
 use thiserror::Error;
 
 use crate::parse::DataStream;
@@ -57,9 +62,17 @@ pub enum Done {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Alias<'a>(&'a ());
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Progress<'a> {
     pub message: &'a [u8],
+}
+
+impl Debug for Progress<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Progress")
+            .field(&self.message.as_bstr())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,7 +84,7 @@ pub enum OptionCommand<'a> {
     Other(OptionOther<'a>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum OptionGit<'a> {
     MaxPackSize(FileSize),
     BigFileThreshold(FileSize),
@@ -83,9 +96,35 @@ pub enum OptionGit<'a> {
     AllowUnsafeFeatures,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OptionOther<'a> {
     pub option: &'a [u8],
+}
+
+impl Debug for OptionGit<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            OptionGit::MaxPackSize(n) => f.debug_tuple("MaxPackSize").field(n).finish(),
+            OptionGit::BigFileThreshold(n) => f.debug_tuple("BigFileThreshold").field(n).finish(),
+            OptionGit::Depth(n) => f.debug_tuple("Depth").field(n).finish(),
+            OptionGit::ActiveBranches(n) => f.debug_tuple("ActiveBranches").field(n).finish(),
+            OptionGit::ExportPackEdges(file) => f
+                .debug_tuple("ExportPackEdges")
+                .field(&file.as_bstr())
+                .finish(),
+            OptionGit::Quiet => write!(f, "Quiet"),
+            OptionGit::Stats => write!(f, "Stats"),
+            OptionGit::AllowUnsafeFeatures => write!(f, "AllowUnsafeFeatures"),
+        }
+    }
+}
+
+impl Debug for OptionOther<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("OptionOther")
+            .field(&self.option.as_bstr())
+            .finish()
+    }
 }
 
 /// A reference to an object by an integer, which allows the front-end to recall
@@ -97,7 +136,7 @@ pub struct OptionOther<'a> {
 /// If `:0` is explicitly used in a mark definition, it is rejected as an error.
 /// fast-import allows it and treats it as if no mark was given, even though its
 /// [docs](https://git-scm.com/docs/git-fast-import#_mark) state it is reserved.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Mark {
     pub mark: NonZeroU64, // uintmax_t in fast-import (at least u64)
@@ -115,12 +154,26 @@ impl Mark {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Debug for Mark {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Mark").field(&self.mark).finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct OriginalOid<'a> {
     pub oid: &'a [u8],
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Debug for OriginalOid<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("OriginalOid")
+            .field(&self.oid.as_bstr())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub enum DataHeader<'a> {
     Counted {
         len: u64, // uintmax_t in fast-import (at least u64)
@@ -128,6 +181,18 @@ pub enum DataHeader<'a> {
     Delimited {
         delim: &'a [u8],
     },
+}
+
+impl Debug for DataHeader<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            DataHeader::Counted { len } => f.debug_struct("Counted").field("len", len).finish(),
+            DataHeader::Delimited { delim } => f
+                .debug_struct("Delimited")
+                .field("delim", &delim.as_bstr())
+                .finish(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
