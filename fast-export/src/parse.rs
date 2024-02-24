@@ -12,28 +12,31 @@ use thiserror::Error;
 
 use crate::command::{Blob, Command, DataHeader, Done, Mark, OriginalOid, Progress};
 
-type Result<T> = std::result::Result<T, ParseError>;
+type Result<T> = std::result::Result<T, StreamError>;
 
 /// A zero-copy pull parser for fast-export streams.
 ///
 /// It uses only as much memory as the single largest command command in the
-/// stream. Any references to parsed data returned by the parser are invalidated
-/// when [`Parser::next`] is called and must be first copied in order to retain
-/// them. References to parsed data can safely be used by multiple threads, so
-/// it can be processed in parallel.
+/// stream. Any references to parsed bytes returned by the parser are
+/// invalidated when [`Parser::next`] is called and must be first copied in
+/// order to retain them. Returned references can safely be used by multiple
+/// threads, to be processed in parallel.
+///
+/// Commands are parsed separately from data streams. To read a data stream,
+/// open a [`DataReader`] from the returned [`DataStream`] with
+/// [`DataStream::open`].
 pub struct Parser<R: BufRead> {
     /// The input reader being parsed. Mutation under `&` is guarded by
     /// `DataState::reading_data`.
     ///
     /// `input` is mutated in two separate ways: while reading a command with
-    /// `Parser::next` or while reading the stream of a `data` command with
-    /// `DataReader::read`. During `Parser::next`, no `&`-references to it are
-    /// live, so it uses the usual notion of `&mut`. During `DataReader::read`,
-    /// `&`-slices of `command_buf` have been returned to the caller, so
-    /// `&mut`-access for the relevant fields is obtained via `UnsafeCell`. That
-    /// is safely performed by ensuring only a single instance of `DataReader`
-    /// can be constructed at a time by guarding its construction with
-    /// `DataState::reading_data`.
+    /// `Parser::next` or while reading a data stream with `DataReader::read`.
+    /// During `Parser::next`, no `&`-references to it are live, so it uses the
+    /// usual notion of `&mut`. During `DataReader::read`, `&`-slices of
+    /// `command_buf` have been returned to the caller, so `&mut`-access for the
+    /// relevant fields is obtained via `UnsafeCell`. That is safely performed
+    /// by ensuring only a single instance of `DataReader` can be constructed at
+    /// a time by guarding its construction with `DataState::reading_data`.
     input: UnsafeCell<Input<R>>,
 
     /// A buffer containing all of the current command.
@@ -41,7 +44,7 @@ pub struct Parser<R: BufRead> {
     /// The current selection in `command_buf`, which is being processed.
     cursor: Span,
 
-    /// The state for reading a `data` command stream.
+    /// The state for reading a data stream.
     ///
     /// When it is `None`, mutation of other fields occurs as usual with `&mut`.
     /// When it is `Some`, only a single `DataReader` may active at a time, and
@@ -49,7 +52,7 @@ pub struct Parser<R: BufRead> {
     data_state: Option<DataState>,
     /// A buffer for reading lines in delimited data. Mutation under `&` is
     /// guarded by `DataState::reading_data`. This is under `Parser`, instead of
-    /// `DataState`, so it can be reused between `data` commands.
+    /// `DataState`, so it can be reused between data streams.
     delim_line_buf: UnsafeCell<Vec<u8>>,
 }
 
@@ -62,9 +65,9 @@ unsafe impl<R: BufRead + Sync> Sync for Parser<R> {}
 ///
 /// This is used instead of directly slicing `command_buf` so that ranges can be
 /// safely saved while the buffer is still being grown. After the full command
-/// has been read (except for a `data` command stream, which is read
-/// separately), `command_buf` will not change until the next call to `next`,
-/// and slices can be made and returned to the caller.
+/// has been read (except for a data stream, which is read separately),
+/// `command_buf` will not change until the next call to `next`, and slices can
+/// be made and returned to the caller.
 #[derive(Copy, Clone, PartialEq, Eq)]
 struct Span {
     start: usize,
@@ -79,13 +82,15 @@ struct Input<R: BufRead> {
     eof: bool,
 }
 
+/// Metadata for the current data stream. It can be opened for reading with
+/// [`DataStream::open`].
 #[derive(Clone)]
 pub struct DataStream<'a, R: BufRead> {
     header: DataHeader<'a>,
     parser: &'a Parser<R>,
 }
 
-/// An exclusive handle for reading the current `data` command stream.
+/// An exclusive handle for reading the current data stream.
 pub struct DataReader<'a, R: BufRead> {
     parser: &'a Parser<R>,
 }
@@ -97,10 +102,10 @@ enum DataSpan {
     Delimited { delim: Span },
 }
 
-/// The state for reading a `data` command stream. The header is stored, instead
-/// of using the one in `DataReader`, to ensure the data is fully read, even
-/// when the caller does not use it. `reading_data` ensures only one
-/// `DataReader` is ever created for this parser at a time.
+/// The state for reading a data stream. `reading_data` ensures only one
+/// `DataReader` is ever created for this parser at a time. The header is
+/// stored, instead of using the one in `DataReader`, so that the data stream
+/// can be skipped when the caller does not finish reading it.
 #[derive(Debug)]
 struct DataState {
     /// Whether a `DataReader` has been opened. It guards mutation under `&` of
@@ -116,6 +121,7 @@ struct DataState {
     delim_line_offset: UnsafeCell<usize>,
 }
 
+/// An error from opening a [`DataReader`].
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
 pub enum DataStreamError {
     #[error("data stream already opened for reading")]
@@ -124,25 +130,25 @@ pub enum DataStreamError {
     Closed,
 }
 
-/// An error from parsing a fast-export stream.
+/// An error from parsing a fast-export stream, including IO errors.
 #[derive(Debug, Error)]
 #[error(transparent)]
-pub enum ParseError {
-    Command(#[from] CommandError),
+pub enum StreamError {
+    Parse(#[from] ParseError),
     Io(#[from] io::Error),
 }
 
-/// An error from parsing a command in a fast-export stream.
+/// An error from parsing a fast-export stream.
 #[derive(Clone, Error, PartialEq, Eq, Hash)]
 #[error("{kind}: {:?}", line.as_bstr())]
-pub struct CommandError {
-    pub kind: CommandErrorKind,
+pub struct ParseError {
+    pub kind: ParseErrorKind,
     pub line: Vec<u8>,
 }
 
 /// A kind of error from parsing a command in a fast-export stream.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
-pub enum CommandErrorKind {
+pub enum ParseErrorKind {
     /// The mark is not a valid integer. fast-import allows more forms of
     /// ill-formatted integers.
     #[error("invalid mark")]
@@ -168,7 +174,7 @@ pub enum CommandErrorKind {
     /// The length for a counted `data` command is not a valid integer.
     #[error("invalid data length")]
     InvalidDataLength,
-    /// EOF was reached before reading the complete counted `data` stream.
+    /// EOF was reached before reading the complete counted data stream.
     #[error("unexpected EOF in data stream")]
     DataUnexpectedEof,
     /// fast-import accepts opening, but not closing, delimiters that contain
@@ -189,7 +195,7 @@ pub enum CommandErrorKind {
     UnsupportedCommand,
 }
 
-use CommandErrorKind as ErrorKind;
+use ParseErrorKind as ErrorKind;
 
 impl<R: BufRead> Parser<R> {
     #[inline]
@@ -219,7 +225,7 @@ impl<R: BufRead> Parser<R> {
         }
 
         self.command_buf.clear();
-        self.bump_line()?;
+        self.bump_command()?;
         if self.input.get_mut().eof {
             return Ok(Command::Done(Done::Eof));
         }
@@ -256,7 +262,7 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_new_blob` in fast-import.c.
     fn parse_blob(&mut self) -> Result<Command<'_, R>> {
-        self.bump_line()?;
+        self.bump_command()?;
         let mark = self.parse_mark()?;
         let original_oid_span = self.parse_original_oid()?;
         let data_span = self.parse_data()?;
@@ -342,7 +348,7 @@ impl<R: BufRead> Parser<R> {
         if self.eat_prefix(b"mark :") {
             let mark =
                 parse_u64(self.line_remaining()).ok_or_else(|| self.err(ErrorKind::InvalidMark))?;
-            self.bump_line()?;
+            self.bump_command()?;
             let mark = Mark::new(mark).ok_or_else(|| self.err(ErrorKind::ZeroMark))?;
             Ok(Some(mark))
         } else {
@@ -354,7 +360,7 @@ impl<R: BufRead> Parser<R> {
     fn parse_original_oid(&mut self) -> Result<Option<Span>> {
         if self.eat_prefix(b"original-oid ") {
             let original_oid_span = self.cursor;
-            self.bump_line()?;
+            self.bump_command()?;
             Ok(Some(original_oid_span))
         } else {
             Ok(None)
@@ -399,7 +405,7 @@ impl<R: BufRead> Parser<R> {
     /// invariants in `Parser::input`.
     unsafe fn read_data(&self, buf: &mut [u8]) -> Result<usize> {
         let Some(data_state) = &self.data_state else {
-            panic!("invalid data state");
+            panic!("invalid data stream state");
         };
         // TODO: Evaluate this ordering.
         if !data_state.reading_data.load(Ordering::SeqCst) {
@@ -464,7 +470,7 @@ impl<R: BufRead> Parser<R> {
     /// Reads to the end of the data stream without consuming it.
     fn skip_data(&mut self) -> Result<()> {
         let Some(data_state) = &mut self.data_state else {
-            panic!("invalid data state");
+            panic!("invalid data stream state");
         };
         // TODO: Evaluate this ordering.
         if data_state.reading_data.load(Ordering::SeqCst) {
@@ -512,7 +518,7 @@ impl<R: BufRead> Parser<R> {
     /// contain any bytes (including NUL), except for LF.
     ///
     // Corresponds to `read_next_command` in fast-import.c.
-    fn bump_line(&mut self) -> io::Result<()> {
+    fn bump_command(&mut self) -> io::Result<()> {
         while !self.input.get_mut().eof {
             self.cursor = self.input.get_mut().read_line(&mut self.command_buf)?;
             match self.get(self.cursor) {
@@ -568,7 +574,7 @@ impl<R: BufRead> Parser<R> {
 
     /// Creates a parse error at the cursor.
     #[inline(never)]
-    fn err(&self, kind: CommandErrorKind) -> ParseError {
+    fn err(&self, kind: ParseErrorKind) -> StreamError {
         // TODO: Improve error reporting:
         // - Use an error reporting library like miette or Ariadne.
         // - Track line in data stream.
@@ -582,7 +588,7 @@ impl<R: BufRead> Parser<R> {
         } else {
             b"<<parsing data stream>>".to_vec()
         };
-        ParseError::Command(CommandError { kind, line })
+        StreamError::Parse(ParseError { kind, line })
     }
 }
 
@@ -691,7 +697,7 @@ impl<R: BufRead> Eq for DataStream<'_, R> {}
 
 impl<'a, R: BufRead> DataReader<'a, R> {
     /// Reads from this data reader into the given buffer. Identical to
-    /// [`DataReader::read`], but returns [`CommandError`].
+    /// [`DataReader::read`], but returns [`ParseError`].
     pub fn read_next(&mut self, buf: &mut [u8]) -> Result<usize> {
         // SAFETY: We have exclusive mutable access to all of the `UnsafeCell`
         // fields, because we are in the single instance of `DataReader`, and
@@ -706,7 +712,7 @@ impl<'a, R: BufRead> DataReader<'a, R> {
     /// recommended to use this when you intend to read the whole stream.
     pub fn skip_rest(&mut self) -> Result<()> {
         let Some(data_state) = &self.parser.data_state else {
-            panic!("invalid data state");
+            panic!("invalid data stream state");
         };
         // TODO: Evaluate this ordering.
         match data_state.reading_data.compare_exchange(
@@ -721,7 +727,7 @@ impl<'a, R: BufRead> DataReader<'a, R> {
     }
 }
 
-/// Identical to [`DataReader::read_next`], but converts [`CommandError`] to
+/// Identical to [`DataReader::read_next`], but converts [`ParseError`] to
 /// [`io::Error`].
 impl<'a, R: BufRead> Read for DataReader<'a, R> {
     #[inline(always)]
@@ -742,28 +748,28 @@ impl DataSpan {
     }
 }
 
-impl Debug for CommandError {
+impl Debug for ParseError {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CommandError")
+        f.debug_struct("ParseError")
             .field("kind", &self.kind)
             .field("line", &self.line.as_bstr())
             .finish()
     }
 }
 
-impl From<io::ErrorKind> for ParseError {
+impl From<io::ErrorKind> for StreamError {
     #[inline]
     fn from(kind: io::ErrorKind) -> Self {
-        ParseError::Io(kind.into())
+        StreamError::Io(kind.into())
     }
 }
 
-impl From<ParseError> for io::Error {
+impl From<StreamError> for io::Error {
     #[inline]
-    fn from(err: ParseError) -> Self {
+    fn from(err: StreamError) -> Self {
         match err {
-            ParseError::Command(err) => io::Error::new(io::ErrorKind::InvalidData, err),
-            ParseError::Io(err) => err,
+            StreamError::Parse(err) => io::Error::new(io::ErrorKind::InvalidData, err),
+            StreamError::Io(err) => err,
         }
     }
 }
