@@ -594,10 +594,20 @@ impl<R: BufRead> Parser<R> {
     /// Creates a parse error at the cursor.
     #[inline(never)]
     fn err(&self, kind: CommandErrorKind) -> ParseError {
-        ParseError::Command(CommandError {
-            kind,
-            line: self.line_remaining().to_owned(),
-        })
+        // TODO: Improve error reporting:
+        // - Use an error reporting library like miette or Ariadne.
+        // - Track line in data stream.
+        // - Would it be useful to include the error range for `io::Error`s from
+        //   `self.input.r`? Such errors seem unlikely to be related to the
+        //   syntax or semantics of the data. It could possibly be tracked by
+        //   recording the size of the buffer with `fill_buf` before calling
+        //   `read`.
+        let line = if self.data_state.is_none() {
+            self.line_remaining().to_owned()
+        } else {
+            b"<<parsing data stream>>".to_vec()
+        };
+        ParseError::Command(CommandError { kind, line })
     }
 }
 
@@ -804,7 +814,7 @@ mod tests {
     }
 
     fn parse_counted_blob(read_all: bool) {
-        let input = &mut &b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata 14\nHello, world!\n\n"[..];
+        let input = &mut &b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata 14\nHello, world!\n"[..];
         let mut parser = Parser::new(input);
 
         let command = parser.next().unwrap();
@@ -823,7 +833,9 @@ mod tests {
         if read_all {
             let mut r = blob.data.open().unwrap();
             let mut buf = Vec::new();
-            r.read_to_end(&mut buf).expect("read to end");
+            if let Err(err) = r.read_to_end(&mut buf) {
+                panic!("read to end: {err}\nbuffer: {:?}", buf.as_bstr());
+            }
             assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
         }
 
@@ -850,7 +862,9 @@ mod tests {
         if read_all {
             let mut r = blob.data.open().unwrap();
             let mut buf = Vec::new();
-            r.read_to_end(&mut buf).expect("read to end");
+            if let Err(err) = r.read_to_end(&mut buf) {
+                panic!("read to end: {err}\nbuffer: {:?}", buf.as_bstr());
+            }
             assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
         }
 
