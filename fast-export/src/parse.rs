@@ -214,12 +214,8 @@ impl<R: BufRead> Parser<R> {
     // Corresponds to the loop in `cmd_fast_import` in fast-import.c.
     pub fn next(&mut self) -> Result<Command<'_, R>> {
         // Finish reading the previous data stream, if the user didn't.
-        if let Some(data_state) = &mut self.data_state {
-            // TODO: Evaluate this ordering.
-            if data_state.reading_data.load(Ordering::SeqCst) {
-                return Err(self.err(ErrorKind::UnfinishedData));
-            }
-            todo!()
+        if self.data_state.is_some() {
+            self.skip_data()?;
         }
 
         self.command_buf.clear();
@@ -265,18 +261,11 @@ impl<R: BufRead> Parser<R> {
         let original_oid_span = self.parse_original_oid()?;
         let data_span = self.parse_data()?;
 
-        let original_oid = original_oid_span.map(|sp| OriginalOid { oid: self.get(sp) });
-        let header = match data_span {
-            DataSpan::Counted { len } => DataHeader::Counted { len },
-            DataSpan::Delimited { delim } => DataHeader::Delimited {
-                delim: self.get(delim),
-            },
-        };
         Ok(Command::Blob(Blob {
             mark,
-            original_oid,
+            original_oid: original_oid_span.map(|sp| OriginalOid { oid: self.get(sp) }),
             data: DataStream {
-                header,
+                header: data_span.expand(self),
                 parser: self,
             },
         }))
@@ -404,6 +393,124 @@ impl<R: BufRead> Parser<R> {
             });
             Ok(header)
         }
+    }
+
+    /// Reads from the current data stream into the given buffer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must have exclusive mutable access to all of the `UnsafeCell`
+    /// fields in `Parser` (`Parser::input`, `DataState::header`,
+    /// `DataState::delim_line_offset`, and `Parser::delim_line_buf`). See the
+    /// invariants in `Parser::input`.
+    unsafe fn read_data(&self, buf: &mut [u8]) -> Result<usize> {
+        let Some(data_state) = &self.data_state else {
+            panic!("invalid data state");
+        };
+        // TODO: Evaluate this ordering.
+        if !data_state.reading_data.load(Ordering::SeqCst) {
+            return Err(self.err(ErrorKind::ClosedData));
+        }
+        // SAFETY: The caller must guarantee exclusive mutable access to these.
+        let (input, header, delim_line_buf, delim_line_offset) = unsafe {
+            (
+                &mut *self.input.get(),
+                &mut *data_state.header.get(),
+                &mut *self.delim_line_buf.get(),
+                &mut *data_state.delim_line_offset.get(),
+            )
+        };
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        match header {
+            DataSpan::Counted { len: len_remaining } => {
+                if *len_remaining == 0 {
+                    return Ok(0);
+                }
+                if input.eof {
+                    return Err(self.err(ErrorKind::DataUnexpectedEof));
+                }
+                let n = usize::try_from(*len_remaining)
+                    .unwrap_or(usize::MAX)
+                    .min(buf.len());
+                let n = input.r.read(&mut buf[..n])?;
+                *len_remaining -= n as u64;
+                Ok(n)
+            }
+            DataSpan::Delimited { delim: delim_span } => {
+                if delim_span.is_empty() {
+                    // An empty delimiter is repurposed to mean EOF has been
+                    // reached, since empty delimiters are forbidden (see
+                    // `ErrorKind::EmptyDelim`).
+                    return Ok(0);
+                }
+                if *delim_line_offset >= delim_line_buf.len() && !input.eof {
+                    delim_line_buf.clear();
+                    *delim_line_offset = 0;
+                    Parser::bump_line_raw(input, delim_line_buf)?;
+                    if delim_line_buf == self.get(*delim_span) {
+                        // Mark the delimiter as done.
+                        *delim_span = Span::from(0..0);
+                        return Ok(0);
+                    }
+                }
+                if input.eof {
+                    return Err(self.err(ErrorKind::UnterminatedData));
+                }
+                let offset = *delim_line_offset;
+                let n = (delim_line_buf.len() - offset).min(buf.len());
+                buf[..n].copy_from_slice(&delim_line_buf[offset..offset + n]);
+                *delim_line_offset += n;
+                Ok(n)
+            }
+        }
+    }
+
+    /// Reads to the end of the data stream without consuming it.
+    fn skip_data(&mut self) -> Result<()> {
+        let Some(data_state) = &mut self.data_state else {
+            panic!("invalid data state");
+        };
+        // TODO: Evaluate this ordering.
+        if data_state.reading_data.load(Ordering::SeqCst) {
+            return Err(self.err(ErrorKind::UnfinishedData));
+        }
+        let input = self.input.get_mut();
+        match *data_state.header.get_mut() {
+            DataSpan::Counted {
+                len: mut len_remaining,
+            } => {
+                while len_remaining > 0 {
+                    let buf = input.r.fill_buf()?;
+                    if buf.is_empty() {
+                        input.eof = true;
+                        return Err(self.err(ErrorKind::DataUnexpectedEof));
+                    }
+                    let n = usize::try_from(len_remaining)
+                        .unwrap_or(usize::MAX)
+                        .min(buf.len());
+                    input.r.consume(n);
+                    len_remaining -= n as u64;
+                }
+            }
+            DataSpan::Delimited { delim: delim_span } => {
+                let delim = &self.command_buf[Range::from(delim_span)];
+                loop {
+                    if input.eof {
+                        return Err(self.err(ErrorKind::UnterminatedData));
+                    }
+                    let delim_line_buf = self.delim_line_buf.get_mut();
+                    delim_line_buf.clear();
+                    Parser::bump_line_raw(input, delim_line_buf)?;
+                    if delim_line_buf == delim {
+                        break;
+                    }
+                }
+            }
+        }
+        self.data_state = None;
+        Ok(())
     }
 
     /// Reads a line from input into `self.line_buf`, stripping the LF
@@ -577,72 +684,14 @@ impl<R: BufRead> PartialEq for DataStream<'_, R> {
 impl<R: BufRead> Eq for DataStream<'_, R> {}
 
 impl<'a, R: BufRead> DataReader<'a, R> {
-    /// Pulls some bytes from this data reader into the specified buffer.
-    /// Identical to [`DataReader::read`], but returns [`CommandError`].
+    /// Reads from this data reader into the given buffer. Identical to
+    /// [`DataReader::read`], but returns [`CommandError`].
     pub fn read_next(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let Some(data_state) = &self.parser.data_state else {
-            panic!("invalid data state");
-        };
-        // TODO: Evaluate this ordering.
-        if !data_state.reading_data.load(Ordering::SeqCst) {
-            return Err(self.parser.err(ErrorKind::ClosedData));
-        }
-        // SAFETY: We have exclusive mutable access to these fields, because all
-        // of them are guarded by `data_state.reading_data`. See the invariants
-        // in `Parser::input`.
-        let (input, header, delim_line_buf, delim_line_offset) = unsafe {
-            (
-                &mut *self.parser.input.get(),
-                &mut *data_state.header.get(),
-                &mut *self.parser.delim_line_buf.get(),
-                &mut *data_state.delim_line_offset.get(),
-            )
-        };
-        if buf.is_empty() {
-            return Ok(0);
-        }
-        match header {
-            DataSpan::Counted { len: len_remaining } => {
-                if *len_remaining == 0 {
-                    return Ok(0);
-                }
-                if input.eof {
-                    return Err(self.parser.err(ErrorKind::DataUnexpectedEof));
-                }
-                let n = usize::try_from(*len_remaining)
-                    .unwrap_or(usize::MAX)
-                    .min(buf.len());
-                let n = input.r.read(&mut buf[..n])?;
-                *len_remaining -= n as u64;
-                Ok(n)
-            }
-            DataSpan::Delimited { delim: delim_span } => {
-                if delim_span.is_empty() {
-                    // An empty delimiter is repurposed to mean EOF has been
-                    // reached, since empty delimiters are forbidden (see
-                    // `ErrorKind::EmptyDelim`).
-                    return Ok(0);
-                }
-                if *delim_line_offset >= delim_line_buf.len() && !input.eof {
-                    delim_line_buf.clear();
-                    *delim_line_offset = 0;
-                    Parser::bump_line_raw(input, delim_line_buf)?;
-                    if delim_line_buf == self.parser.get(*delim_span) {
-                        // Mark the delimiter as done.
-                        *delim_span = Span::from(0..0);
-                        return Ok(0);
-                    }
-                }
-                if input.eof {
-                    return Err(self.parser.err(ErrorKind::UnterminatedData));
-                }
-                let offset = *delim_line_offset;
-                let n = (delim_line_buf.len() - offset).min(buf.len());
-                buf[..n].copy_from_slice(&delim_line_buf[offset..offset + n]);
-                *delim_line_offset += n;
-                Ok(n)
-            }
-        }
+        // SAFETY: We have exclusive mutable access to all of the `UnsafeCell`
+        // fields, because we are in the single instance of `DataReader`, and
+        // its construction was guarded by `DataState::reading_data`. See the
+        // invariants in `Parser::input`.
+        unsafe { self.parser.read_data(buf) }
     }
 
     /// Skip reading the rest of the data stream and close the reader. The data
@@ -672,6 +721,18 @@ impl<'a, R: BufRead> Read for DataReader<'a, R> {
     #[inline(always)]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.read_next(buf).map_err(|err| err.into())
+    }
+}
+
+impl DataSpan {
+    #[inline(always)]
+    fn expand<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> DataHeader<'a> {
+        match *self {
+            DataSpan::Counted { len } => DataHeader::Counted { len },
+            DataSpan::Delimited { delim } => DataHeader::Delimited {
+                delim: parser.get(delim),
+            },
+        }
     }
 }
 
@@ -762,8 +823,8 @@ mod tests {
         if read_all {
             let mut r = blob.data.open().unwrap();
             let mut buf = Vec::new();
-            r.read_to_end(&mut buf).unwrap();
-            assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr());
+            r.read_to_end(&mut buf).expect("read to end");
+            assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
         }
 
         assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
@@ -789,8 +850,8 @@ mod tests {
         if read_all {
             let mut r = blob.data.open().unwrap();
             let mut buf = Vec::new();
-            r.read_to_end(&mut buf).unwrap();
-            assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr());
+            r.read_to_end(&mut buf).expect("read to end");
+            assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
         }
 
         assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
