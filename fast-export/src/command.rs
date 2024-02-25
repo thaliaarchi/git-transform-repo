@@ -1,55 +1,50 @@
-use std::{
-    fmt::{self, Debug, Formatter},
-    io::BufRead,
-    num::NonZeroU64,
-};
+use std::num::NonZeroU64;
 
-use bstr::ByteSlice;
 use thiserror::Error;
 
 use crate::parse::DataStream;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command<'a, R: BufRead> {
-    Blob(Blob<'a, R>),
-    Commit(Commit<'a>),
-    Tag(Tag<'a>),
-    Reset(Reset<'a>),
-    Ls(Ls<'a>),
-    CatBlob(CatBlob<'a>),
-    GetMark(GetMark<'a>),
+pub enum Command<'a, B, R> {
+    Blob(Blob<'a, B, R>),
+    Commit(Commit),
+    Tag(Tag),
+    Reset(Reset),
+    Ls(Ls),
+    CatBlob(CatBlob),
+    GetMark(GetMark),
     Checkpoint,
     Done(Done),
-    Alias(Alias<'a>),
-    Progress(Progress<'a>),
-    Feature(Feature<'a>),
-    Option(OptionCommand<'a>),
+    Alias(Alias),
+    Progress(Progress<B>),
+    Feature(Feature),
+    Option(OptionCommand<B>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Blob<'a, R: BufRead> {
+pub struct Blob<'a, B, R> {
     pub mark: Option<Mark>,
-    pub original_oid: Option<OriginalOid<'a>>,
-    pub data: DataStream<'a, R>,
+    pub original_oid: Option<OriginalOid<B>>,
+    pub data: DataStream<'a, B, R>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Commit<'a>(&'a ());
+pub struct Commit;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Tag<'a>(&'a ());
+pub struct Tag;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Reset<'a>(&'a ());
+pub struct Reset;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ls<'a>(&'a ());
+pub struct Ls;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CatBlob<'a>(&'a ());
+pub struct CatBlob;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GetMark<'a>(&'a ());
+pub struct GetMark;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Done {
@@ -60,71 +55,37 @@ pub enum Done {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Alias<'a>(&'a ());
+pub struct Alias;
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct Progress<'a> {
-    pub message: &'a [u8],
-}
-
-impl Debug for Progress<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Progress")
-            .field(&self.message.as_bstr())
-            .finish()
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Progress<B> {
+    pub message: B,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Feature<'a>(&'a ());
+pub struct Feature;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OptionCommand<'a> {
-    Git(OptionGit<'a>),
-    Other(OptionOther<'a>),
+pub enum OptionCommand<B> {
+    Git(OptionGit<B>),
+    Other(OptionOther<B>),
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub enum OptionGit<'a> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OptionGit<B> {
     MaxPackSize(FileSize),
     BigFileThreshold(FileSize),
     Depth(u32),
     ActiveBranches(u32),
-    ExportPackEdges(&'a [u8]),
+    ExportPackEdges(B),
     Quiet,
     Stats,
     AllowUnsafeFeatures,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct OptionOther<'a> {
-    pub option: &'a [u8],
-}
-
-impl Debug for OptionGit<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            OptionGit::MaxPackSize(n) => f.debug_tuple("MaxPackSize").field(n).finish(),
-            OptionGit::BigFileThreshold(n) => f.debug_tuple("BigFileThreshold").field(n).finish(),
-            OptionGit::Depth(n) => f.debug_tuple("Depth").field(n).finish(),
-            OptionGit::ActiveBranches(n) => f.debug_tuple("ActiveBranches").field(n).finish(),
-            OptionGit::ExportPackEdges(file) => f
-                .debug_tuple("ExportPackEdges")
-                .field(&file.as_bstr())
-                .finish(),
-            OptionGit::Quiet => write!(f, "Quiet"),
-            OptionGit::Stats => write!(f, "Stats"),
-            OptionGit::AllowUnsafeFeatures => write!(f, "AllowUnsafeFeatures"),
-        }
-    }
-}
-
-impl Debug for OptionOther<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("OptionOther")
-            .field(&self.option.as_bstr())
-            .finish()
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OptionOther<B> {
+    pub option: B,
 }
 
 /// A reference to an object by an integer, which allows the front-end to recall
@@ -136,7 +97,7 @@ impl Debug for OptionOther<'_> {
 /// If `:0` is explicitly used in a mark definition, it is rejected as an error.
 /// fast-import allows it and treats it as if no mark was given, even though its
 /// [docs](https://git-scm.com/docs/git-fast-import#_mark) state it is reserved.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Mark {
     pub mark: NonZeroU64, // uintmax_t in fast-import (at least u64)
@@ -154,45 +115,19 @@ impl Mark {
     }
 }
 
-impl Debug for Mark {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Mark").field(&self.mark).finish()
-    }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OriginalOid<B> {
+    pub oid: B,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct OriginalOid<'a> {
-    pub oid: &'a [u8],
-}
-
-impl Debug for OriginalOid<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("OriginalOid")
-            .field(&self.oid.as_bstr())
-            .finish()
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub enum DataHeader<'a> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DataHeader<B> {
     Counted {
         len: u64, // uintmax_t in fast-import (at least u64)
     },
     Delimited {
-        delim: &'a [u8],
+        delim: B,
     },
-}
-
-impl Debug for DataHeader<'_> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            DataHeader::Counted { len } => f.debug_struct("Counted").field("len", len).finish(),
-            DataHeader::Delimited { delim } => f
-                .debug_struct("Delimited")
-                .field("delim", &delim.as_bstr())
-                .finish(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

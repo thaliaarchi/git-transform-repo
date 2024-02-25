@@ -26,7 +26,7 @@ type Result<T> = std::result::Result<T, StreamError>;
 /// Commands are parsed separately from data streams. To read a data stream,
 /// open a [`DataReader`] from the returned [`DataStream`] with
 /// [`DataStream::open`].
-pub struct Parser<R: BufRead> {
+pub struct Parser<R> {
     /// The input reader being parsed. Mutation under `&` is guarded by
     /// `DataState::reading_data`.
     ///
@@ -63,7 +63,7 @@ pub struct Parser<R: BufRead> {
 // SAFETY: All `UnsafeCell` fields are guaranteed only be modified by a single
 // thread. When mutation occurs under an `&`-reference, it is atomically guarded
 // by `DataState::reading_data`. See the invariants of `Parser::input`.
-unsafe impl<R: BufRead + Sync> Sync for Parser<R> {}
+unsafe impl<R> Sync for Parser<R> {}
 
 /// A range of bytes within `command_buf`.
 ///
@@ -79,7 +79,7 @@ struct Span {
 }
 
 /// Input for a fast-export stream.
-struct Input<R: BufRead> {
+struct Input<R> {
     /// Reader for the fast-export stream.
     r: R,
     /// Whether the reader has reached EOF.
@@ -89,13 +89,13 @@ struct Input<R: BufRead> {
 /// Metadata for the current data stream. It can be opened for reading with
 /// [`DataStream::open`].
 #[derive(Clone)]
-pub struct DataStream<'a, R: BufRead> {
-    header: DataHeader<'a>,
+pub struct DataStream<'a, B, R> {
+    header: DataHeader<B>,
     parser: &'a Parser<R>,
 }
 
 /// An exclusive handle for reading the current data stream.
-pub struct DataReader<'a, R: BufRead> {
+pub struct DataReader<'a, R> {
     parser: &'a Parser<R>,
     marker: PhantomData<&'a mut Parser<R>>,
 }
@@ -227,7 +227,7 @@ impl<R: BufRead> Parser<R> {
     /// copied if they are retained.
     ///
     // Corresponds to the loop in `cmd_fast_import` in fast-import.c.
-    pub fn next(&mut self) -> Result<Command<'_, R>> {
+    pub fn next(&mut self) -> Result<Command<'_, &[u8], R>> {
         // Finish reading the previous data stream, if the user didn't.
         if self.data_state.is_some() {
             self.skip_data()?;
@@ -246,9 +246,8 @@ impl<R: BufRead> Parser<R> {
         }
 
         if self.input.get_mut().eof {
-            return Ok(Command::Done(Done::Eof));
-        }
-        if self.eat_if_equals(b"blob") {
+            Ok(Command::Done(Done::Eof))
+        } else if self.eat_if_equals(b"blob") {
             self.parse_blob()
         } else if self.eat_prefix(b"commit ") {
             self.parse_commit()
@@ -282,7 +281,7 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_new_blob` in fast-import.c.
-    fn parse_blob(&mut self) -> Result<Command<'_, R>> {
+    fn parse_blob(&mut self) -> Result<Command<'_, &[u8], R>> {
         self.bump_command()?;
         let mark = self.parse_mark()?;
         let original_oid_span = self.parse_original_oid()?;
@@ -299,48 +298,48 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_new_commit` in fast-import.c.
-    fn parse_commit(&mut self) -> Result<Command<'_, R>> {
+    fn parse_commit(&mut self) -> Result<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_new_tag` in fast-import.c.
-    fn parse_tag(&mut self) -> Result<Command<'_, R>> {
+    fn parse_tag(&mut self) -> Result<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_reset_branch` in fast-import.c.
-    fn parse_reset(&mut self) -> Result<Command<'_, R>> {
+    fn parse_reset(&mut self) -> Result<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_ls` in fast-import.c.
-    fn parse_ls(&mut self) -> Result<Command<'_, R>> {
+    fn parse_ls(&mut self) -> Result<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_cat_blob` in fast-import.c.
-    fn parse_cat_blob(&mut self) -> Result<Command<'_, R>> {
+    fn parse_cat_blob(&mut self) -> Result<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_get_mark` in fast-import.c.
-    fn parse_get_mark(&mut self) -> Result<Command<'_, R>> {
+    fn parse_get_mark(&mut self) -> Result<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_checkpoint` in fast-import.c.
-    fn parse_checkpoint(&mut self) -> Result<Command<'_, R>> {
+    fn parse_checkpoint(&mut self) -> Result<Command<'_, &[u8], R>> {
         self.has_optional_lf = true;
         Ok(Command::Checkpoint)
     }
 
     // Corresponds to `parse_alias` in fast-import.c.
-    fn parse_alias(&mut self) -> Result<Command<'_, R>> {
+    fn parse_alias(&mut self) -> Result<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_progress` in fast-import.c.
-    fn parse_progress(&mut self) -> Result<Command<'_, R>> {
+    fn parse_progress(&mut self) -> Result<Command<'_, &[u8], R>> {
         self.has_optional_lf = true;
         Ok(Command::Progress(Progress {
             message: self.line_remaining(),
@@ -348,12 +347,12 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_feature` in fast-import.c.
-    fn parse_feature(&mut self) -> Result<Command<'_, R>> {
+    fn parse_feature(&mut self) -> Result<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_option` in fast-import.c.
-    fn parse_option(&mut self) -> Result<Command<'_, R>> {
+    fn parse_option(&mut self) -> Result<Command<'_, &[u8], R>> {
         todo!()
     }
 
@@ -561,10 +560,10 @@ impl<R: BufRead> Parser<R> {
         Ok(())
     }
 
-    /// Returns the text in the command at the cursor.
+    /// Returns the text in the command at the span.
     #[inline(always)]
-    fn get(&self, range: Span) -> &[u8] {
-        &self.command_buf[Range::from(range)]
+    fn get(&self, span: Span) -> &[u8] {
+        &self.command_buf[Range::from(span)]
     }
 
     /// Returns the remainder of the line at the cursor.
@@ -619,7 +618,7 @@ impl<R: BufRead> Parser<R> {
     }
 }
 
-impl<R: BufRead + Debug> Debug for Parser<R> {
+impl<R: Debug> Debug for Parser<R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Parser")
             .field("input", &self.input)
@@ -683,7 +682,7 @@ impl<R: BufRead> Input<R> {
     }
 }
 
-impl<'a, R: BufRead> DataStream<'a, R> {
+impl<'a, B, R: BufRead> DataStream<'a, B, R> {
     pub fn open(&self) -> result::Result<DataReader<'a, R>, DataStreamError> {
         let Some(state) = &self.parser.data_state else {
             return Err(DataStreamError::Closed);
@@ -702,12 +701,12 @@ impl<'a, R: BufRead> DataStream<'a, R> {
     }
 
     #[inline(always)]
-    pub fn header(&self) -> &DataHeader<'a> {
+    pub fn header(&self) -> &DataHeader<B> {
         &self.header
     }
 }
 
-impl<R: BufRead> Debug for DataStream<'_, R> {
+impl<B: Debug, R> Debug for DataStream<'_, B, R> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("DataStream")
             .field("header", &self.header)
@@ -715,16 +714,16 @@ impl<R: BufRead> Debug for DataStream<'_, R> {
     }
 }
 
-impl<R: BufRead> PartialEq for DataStream<'_, R> {
+impl<B: PartialEq, R> PartialEq for DataStream<'_, B, R> {
     #[inline(always)]
     fn eq(&self, other: &Self) -> bool {
         self.header == other.header && ptr::eq(self.parser as _, other.parser as _)
     }
 }
 
-impl<R: BufRead> Eq for DataStream<'_, R> {}
+impl<B: Eq, R> Eq for DataStream<'_, B, R> {}
 
-impl<'a, R: BufRead> DataReader<'a, R> {
+impl<R: BufRead> DataReader<'_, R> {
     /// Reads from this data reader into the given buffer. Identical to
     /// [`DataReader::read`], but returns [`ParseError`].
     pub fn read_next(&mut self, buf: &mut [u8]) -> Result<usize> {
@@ -758,7 +757,7 @@ impl<'a, R: BufRead> DataReader<'a, R> {
 
 /// Identical to [`DataReader::read_next`], but converts [`ParseError`] to
 /// [`io::Error`].
-impl<'a, R: BufRead> Read for DataReader<'a, R> {
+impl<R: BufRead> Read for DataReader<'_, R> {
     #[inline(always)]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.read_next(buf).map_err(|err| err.into())
@@ -767,7 +766,7 @@ impl<'a, R: BufRead> Read for DataReader<'a, R> {
 
 impl DataSpan {
     #[inline(always)]
-    fn expand<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> DataHeader<'a> {
+    fn expand<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> DataHeader<&'a [u8]> {
         match *self {
             DataSpan::Counted { len } => DataHeader::Counted { len },
             DataSpan::Delimited { delim } => DataHeader::Delimited {
@@ -864,7 +863,7 @@ mod tests {
         assert_eq!(
             blob.original_oid,
             Some(OriginalOid {
-                oid: b"3141592653589793238462643383279502884197",
+                oid: &b"3141592653589793238462643383279502884197"[..],
             }),
         );
         assert_eq!(blob.data.header, DataHeader::Counted { len: 14 });
@@ -898,10 +897,13 @@ mod tests {
         assert_eq!(
             blob.original_oid,
             Some(OriginalOid {
-                oid: b"3141592653589793238462643383279502884197",
+                oid: &b"3141592653589793238462643383279502884197"[..],
             }),
         );
-        assert_eq!(blob.data.header, DataHeader::Delimited { delim: b"EOF" });
+        assert_eq!(
+            blob.data.header,
+            DataHeader::Delimited { delim: &b"EOF"[..] },
+        );
 
         if read_all {
             let mut r = blob.data.open().unwrap();

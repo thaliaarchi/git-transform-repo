@@ -6,11 +6,11 @@ pub trait Dump {
     fn dump<W: Write>(&self, w: &mut W) -> io::Result<()>;
 }
 
-impl Dump for OptionGit<'_> {
+impl<B: AsRef<[u8]>> Dump for OptionGit<B> {
     fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         // Positive sign and leading zeros are not preserved from the source.
         w.write_all(b"option git ")?;
-        match *self {
+        match self {
             OptionGit::MaxPackSize(n) => {
                 w.write_all(b"--max-pack-size=")?;
                 n.dump(w)?;
@@ -25,7 +25,7 @@ impl Dump for OptionGit<'_> {
             OptionGit::ActiveBranches(n) => write!(w, "--active-branches={n}\n"),
             OptionGit::ExportPackEdges(file) => {
                 write!(w, "--export-pack-edges=")?;
-                w.write_all(file)?;
+                w.write_all(file.as_ref())?;
                 w.write_all(b"\n")
             }
             OptionGit::Quiet => w.write_all(b"--quiet\n"),
@@ -35,10 +35,10 @@ impl Dump for OptionGit<'_> {
     }
 }
 
-impl Dump for OptionOther<'_> {
+impl<B: AsRef<[u8]>> Dump for OptionOther<B> {
     fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"option ")?;
-        w.write_all(self.option)?;
+        w.write_all(self.option.as_ref())?;
         w.write_all(b"\n")
     }
 }
@@ -49,10 +49,10 @@ impl Dump for Mark {
     }
 }
 
-impl Dump for OriginalOid<'_> {
+impl<B: AsRef<[u8]>> Dump for OriginalOid<B> {
     fn dump<W: Write>(&self, w: &mut W) -> io::Result<()> {
         w.write_all(b"original-oid ")?;
-        w.write_all(self.oid)?;
+        w.write_all(self.oid.as_ref())?;
         w.write_all(b"\n")
     }
 }
