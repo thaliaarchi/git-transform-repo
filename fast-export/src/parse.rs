@@ -2,6 +2,7 @@ use std::{
     cell::UnsafeCell,
     fmt::{self, Debug, Formatter},
     io::{self, BufRead, Read},
+    marker::PhantomData,
     ops::Range,
     ptr, result, str,
     sync::atomic::{AtomicBool, Ordering},
@@ -96,6 +97,7 @@ pub struct DataStream<'a, R: BufRead> {
 /// An exclusive handle for reading the current data stream.
 pub struct DataReader<'a, R: BufRead> {
     parser: &'a Parser<R>,
+    marker: PhantomData<&'a mut Parser<R>>,
 }
 
 /// Spanned version of [`DataHeader`].
@@ -693,6 +695,7 @@ impl<'a, R: BufRead> DataStream<'a, R> {
         {
             Ok(_) => Ok(DataReader {
                 parser: self.parser,
+                marker: PhantomData,
             }),
             Err(_) => Err(DataStreamError::AlreadyOpened),
         }
