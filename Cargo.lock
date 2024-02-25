@@ -324,6 +324,7 @@ name = "transform-repo"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fast-export",
  "paste",
  "pyo3",
  "regex",
