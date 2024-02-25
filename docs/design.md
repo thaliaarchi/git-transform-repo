@@ -22,11 +22,79 @@ Instead, I think it should write the results to a separate, fresh repo by
 default and wouldn't modify the source repo. Modifying the current repo could be
 opt-in by passing `--in-place` and, if it is not a fresh clone, `--force`.
 
-## Other input formats
+## Front-ends
+
+### Piped fast-export streams
 
 filter-repo exposes no way to ingest a fast-export stream. This would be useful
-as a part of a pipeline, such as processing a repo converted with
+as a part of a pipeline, such as directly processing a repo converted with
 hg-fast-export.
+
+### Libraries
+
+fast-export-rust should make it easy to release your tool as both a binary that
+emits fast-export streams and as a Rust library.
+
+Push or pull? Both? With push, the producer can write stateful code easily and
+the consumer (e.g., git-transform-repo) needs to use a state machine setup, if
+state is needed. The roles of state are flipped for pull. I usually prefer to
+write pull parsers, as they give greater flexibility to the consumer. Since pull
+parsers can be wrapped to become push parsers, fast-export-rust could provide
+traits for both, an adaptor for converting pull to push, and a way to easily
+dump the stream in `main` given either.
+
+### Releases from archives
+
+I've needed to construct repos from tar and zip releases of projects many times.
+When trying to make a useful history more granular than just using the dates of
+the releases, file metadata inside the archives can be used. Files can be
+grouped into commits by date modified, such as by hours.
+
+It gets complicated when the provenance of changes is messy, such as with the
+Inferno OS 1E–3E releases. There are two versions available for 1E: a version of
+a beta build which was modified later ([“1e0”](https://web.archive.org/web/20110807071440/http://www.vitanuova.com/dist/old/1e/1e0.tgz))
+and the 1.0 release ([“1e1”](https://web.archive.org/web/20110807071535/http://www.vitanuova.com/dist/old/1e/1e1src.tgz)).
+1e0 has earlier timestamps for many files, and those could be fashioned into
+commits on the main branch. Anything later than 1e1 would be in a separate
+branch. Then, 1e1 would continue off of the first part of 1e0. Tracking all of
+this by hand is messy, and I want to automate it.
+
+A front-end could export the contents of a tar as a fast-export stream. As it
+reads files, it would immediately stream them as blobs, marked so they can be
+referenced later. The pertinent metadata would be collected, then after all
+blobs have been dumped, it would analyze and generate commits. With a zip, it
+could dump blobs on demand, if that is useful, since it has an index.
+
+This wouldn't need to be folded into git-transform-repo, since it would emit a
+fast-export stream. However, if fast-export-rust makes it easy to publish a tool
+as as a binary and library, it could be plugged in directly.
+
+### Other VCSes
+
+It may be worth porting hg-fast-export for stability and control, as I ran into
+[a change](https://github.com/thaliaarchi/repo-archival/commit/890abd5d36c1f5bfce81f5f884d42835f6e57e0e)
+which now produces different output from before. Although that change may have
+improved correctness for future conversions, it is now different from existing
+conversions that seem to have used the tool (or some other tool that happens to
+produce the same output). I usually work with old repos and need
+reproducibility.
+
+### Remote machines
+
+It could be useful to export a repo on one machine, wrap it in some transport
+like TLS, and import it on another. I suspect centralized VCSes like SVN might
+benefit from this, where traditional approaches to exporting have checked out
+each revision in a very slow process.
+
+The stream would need compression. The fast-export format is designed for
+simplicity of implementation, so blobs are not compressed like in packfiles and
+would be very large. The stream could be sent in chunks and compressed as a
+whole, or each blob could be compressed. Then on the receiving side, a decoder
+would decompress and concatenate the chunks, piping it to a local consumer as a
+regular fast-export stream. This bridge tool would enable extensions to the
+format for transport purposes, because that would be a private implementation
+detail (well, until someone else writes their own tool using this transport
+protocol).
 
 ## Output formats
 
