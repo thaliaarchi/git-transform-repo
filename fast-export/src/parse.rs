@@ -27,17 +27,17 @@ type Result<T> = std::result::Result<T, StreamError>;
 /// open a [`DataReader`] from the returned [`DataStream`] with
 /// [`DataStream::open`].
 pub struct Parser<R> {
-    /// The input reader being parsed. Mutation under `&` is guarded by
-    /// `DataState::reading_data`.
+    /// The input reader being parsed.
     ///
     /// `input` is mutated in two separate ways: while reading a command with
-    /// `Parser::next` or while reading a data stream with `DataReader::read`.
-    /// During `Parser::next`, no `&`-references to it are live, so it uses the
-    /// usual notion of `&mut`. During `DataReader::read`, `&`-slices of
-    /// `command_buf` have been returned to the caller, so `&mut`-access for the
-    /// relevant fields is obtained via `UnsafeCell`. That is safely performed
-    /// by ensuring only a single instance of `DataReader` can be constructed at
-    /// a time by guarding its construction with `DataState::reading_data`.
+    /// `Parser::next` or while reading a data stream with a `DataReader`.
+    /// `Parser::next` already has exclusive access to the parser, because it
+    /// requires `&mut`, and the caller cannot retain any `&`-references during
+    /// it. Reading from the `DataReader` happens after `&`-slices of
+    /// `command_buf` have been returned to the caller, so it uses `UnsafeCell`
+    /// to modify `input` and `data_state`. That is safely performed by ensuring
+    /// only a single instance of `DataReader` can be constructed at a time by
+    /// guarding its construction with `Parser::data_opened`.
     input: UnsafeCell<Input<R>>,
 
     /// A buffer containing all of the current command.
@@ -45,16 +45,14 @@ pub struct Parser<R> {
     /// The current selection in `command_buf`, which is being processed.
     cursor: Span,
 
+    /// Whether a `DataReader` has been opened for reading. This guards
+    /// `DataStream::open`, to ensure that only one `DataReader` can be opened
+    /// per call to `Parser::next`.
+    data_opened: AtomicBool,
     /// The state for reading a data stream.
     ///
-    /// When it is `None`, mutation of other fields occurs as usual with `&mut`.
-    /// When it is `Some`, only a single `DataReader` may active at a time, and
-    /// through it, mutation of `UnsafeCell` fields occurs under `&`.
-    data_state: Option<DataState>,
-    /// A buffer for reading lines in delimited data. Mutation under `&` is
-    /// guarded by `DataState::reading_data`. This is under `Parser`, instead of
-    /// `DataState`, so it can be reused between data streams.
-    delim_line_buf: UnsafeCell<Vec<u8>>,
+    /// It may only be mutated under `&` within the `DataReader`.
+    data_state: UnsafeCell<DataState>,
 
     /// Whether the previous command ended with an optional LF.
     has_optional_lf: bool,
@@ -62,7 +60,8 @@ pub struct Parser<R> {
 
 // SAFETY: All `UnsafeCell` fields are guaranteed only be modified by a single
 // thread. When mutation occurs under an `&`-reference, it is atomically guarded
-// by `DataState::reading_data`. See the invariants of `Parser::input`.
+// by `Parser::data_opened` to ensure it can only happen by one thread. See the
+// invariants of `Parser::input`.
 unsafe impl<R> Sync for Parser<R> {}
 
 /// A range of bytes within `command_buf`.
@@ -107,33 +106,30 @@ enum DataSpan {
     Delimited { delim: Span },
 }
 
-/// The state for reading a data stream. `reading_data` ensures only one
+/// The state for reading a data stream. `Parser::data_opened` ensures only one
 /// `DataReader` is ever created for this parser at a time. The header is
-/// stored, instead of using the one in `DataReader`, so that the data stream
+/// stored, instead of using the one in `DataStream`, so that the data stream
 /// can be skipped when the caller does not finish reading it.
 #[derive(Debug)]
 struct DataState {
-    /// Whether a `DataReader` has been opened. It guards mutation under `&` of
-    /// `Parser::input`, `Parser::delim_line_buf`, `DataState::len_remaining`,
-    /// and `DataState::delim_line_offset`,
-    reading_data: AtomicBool,
-    /// The header information for the current data stream. For counted data,
-    /// the length is of the unread portion of the stream. Mutation under `&` is
-    /// guarded by `reading_data`.
-    header: UnsafeCell<DataSpan>,
-    /// The offset into `Parse::delim_line_buf`, at which reading begins.
-    /// Mutation under `&` is guarded by `DataState::reading_data`.
-    delim_line_offset: UnsafeCell<usize>,
+    /// The header information for the data stream.
+    header: DataSpan,
+    /// Whether the data stream has been read to completion.
+    finished: bool,
+    /// Whether the data reader has been closed.
+    closed: bool,
+    /// The number of bytes read from the data stream.
+    len_read: u64,
+    /// A buffer for reading lines in delimited data.
+    line_buf: Vec<u8>,
+    /// The offset into `line_buf`, at which reading begins.
+    line_offset: usize,
 }
 
 /// An error from opening a [`DataReader`].
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
-pub enum DataStreamError {
-    #[error("data stream already opened for reading")]
-    AlreadyOpened,
-    #[error("data stream closed")]
-    Closed,
-}
+#[error("data stream already opened for reading")]
+pub struct DataReaderError;
 
 /// An error from parsing a fast-export stream, including IO errors.
 #[derive(Debug, Error)]
@@ -155,7 +151,7 @@ pub struct ParseError {
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
 pub enum ParseErrorKind {
     /// The mark is not a valid integer. fast-import allows more forms of
-    /// ill-formatted integers.
+    /// ill-formatted integers than here.
     #[error("invalid mark")]
     InvalidMark,
     /// fast-import allows `mark :0`, but it 0 is used for when no mark has been
@@ -173,8 +169,8 @@ pub enum ParseErrorKind {
     /// [`DataReader::skip_rest`].
     #[error("data stream was not read to the end")]
     UnfinishedData,
-    /// The data reader has already been closed by [`DataReader::skip_rest`].
-    #[error("data reader has already been closed")]
+    /// The data reader has already been closed by [`DataReader::close`].
+    #[error("data reader is closed")]
     ClosedData,
     /// The length for a counted `data` command is not a valid integer.
     #[error("invalid data length")]
@@ -206,6 +202,7 @@ pub enum ParseErrorKind {
 use ParseErrorKind as ErrorKind;
 
 impl<R: BufRead> Parser<R> {
+    /// Creates a new `Parser` for reading the given input.
     #[inline]
     pub fn new(input: R) -> Self {
         Parser {
@@ -215,8 +212,15 @@ impl<R: BufRead> Parser<R> {
             }),
             command_buf: Vec::new(),
             cursor: Span::from(0..0),
-            data_state: None,
-            delim_line_buf: UnsafeCell::new(Vec::new()),
+            data_opened: AtomicBool::new(false),
+            data_state: UnsafeCell::new(DataState {
+                header: DataSpan::Counted { len: 0 },
+                finished: false,
+                closed: false,
+                len_read: 0,
+                line_buf: Vec::new(),
+                line_offset: 0,
+            }),
             has_optional_lf: false,
         }
     }
@@ -224,13 +228,14 @@ impl<R: BufRead> Parser<R> {
     /// Parses the next command in the fast-export stream.
     ///
     /// The parsed commands borrow from the parser's buffer, so need to be
-    /// copied if they are retained.
+    /// copied before calling `next` again to retain them.
     ///
     // Corresponds to the loop in `cmd_fast_import` in fast-import.c.
     pub fn next(&mut self) -> Result<Command<'_, &[u8], R>> {
         // Finish reading the previous data stream, if the user didn't.
-        if self.data_state.is_some() {
-            self.skip_data()?;
+        if !self.data_state.get_mut().finished {
+            // SAFETY: We have `&mut`-access to all of `Parser`.
+            unsafe { self.skip_data()? };
         }
 
         self.command_buf.clear();
@@ -392,7 +397,6 @@ impl<R: BufRead> Parser<R> {
         if !self.eat_prefix(b"data ") {
             return Err(self.err(ErrorKind::ExpectedDataCommand));
         }
-        debug_assert!(self.data_state.is_none(), "unaccounted 'data' command");
         let header = if self.eat_prefix(b"<<") {
             let delim_span = self.cursor;
             if delim_span.is_empty() {
@@ -406,12 +410,13 @@ impl<R: BufRead> Parser<R> {
                 .ok_or_else(|| self.err(ErrorKind::InvalidDataLength))?;
             DataSpan::Counted { len }
         };
+        self.data_opened.store(false, Ordering::Release);
+        let data_state = self.data_state.get_mut();
+        data_state.header = header;
+        data_state.finished = matches!(data_state.header, DataSpan::Counted { len: 0 });
+        data_state.closed = false;
+        data_state.len_read = 0;
         self.has_optional_lf = true;
-        self.data_state = Some(DataState {
-            reading_data: AtomicBool::new(false),
-            header: UnsafeCell::new(header),
-            delim_line_offset: UnsafeCell::new(0),
-        });
         Ok(header)
     }
 
@@ -419,126 +424,105 @@ impl<R: BufRead> Parser<R> {
     ///
     /// # Safety
     ///
-    /// The caller must have exclusive mutable access to all of the `UnsafeCell`
-    /// fields in `Parser` (`Parser::input`, `DataState::header`,
-    /// `DataState::delim_line_offset`, and `Parser::delim_line_buf`). See the
-    /// invariants in `Parser::input`.
+    /// The caller must guarantee exclusive mutable access to all of the
+    /// `UnsafeCell` fields in `Parser` (`Parser::input` and
+    /// `Parser::data_state`). See the invariants in `Parser::input`.
     unsafe fn read_data(&self, buf: &mut [u8]) -> Result<usize> {
-        let Some(data_state) = &self.data_state else {
-            panic!("invalid data stream state");
-        };
-        // TODO: Evaluate this ordering.
-        if !data_state.reading_data.load(Ordering::SeqCst) {
+        // SAFETY: Guaranteed by caller.
+        let (input, s) = unsafe { (&mut *self.input.get(), &mut *self.data_state.get()) };
+        if s.closed {
             return Err(self.err(ErrorKind::ClosedData));
         }
-        // SAFETY: The caller must guarantee exclusive mutable access to these.
-        let (input, header, delim_line_buf, delim_line_offset) = unsafe {
-            (
-                &mut *self.input.get(),
-                &mut *data_state.header.get(),
-                &mut *self.delim_line_buf.get(),
-                &mut *data_state.delim_line_offset.get(),
-            )
-        };
-        if buf.is_empty() {
+        if buf.is_empty() || s.finished {
             return Ok(0);
         }
-        match header {
-            DataSpan::Counted { len: len_remaining } => {
-                if *len_remaining == 0 {
-                    return Ok(0);
-                }
+        match s.header {
+            DataSpan::Counted { len } => {
                 if input.eof {
                     return Err(self.err(ErrorKind::DataUnexpectedEof));
                 }
-                let n = usize::try_from(*len_remaining)
+                let end = usize::try_from(len - s.len_read)
                     .unwrap_or(usize::MAX)
                     .min(buf.len());
-                let n = input.r.read(&mut buf[..n])?;
-                *len_remaining -= n as u64;
+                let n = input.r.read(&mut buf[..end])?;
+                debug_assert!(n <= end, "misbehaving BufRead implementation");
+                s.len_read += n as u64;
+                if s.len_read >= len {
+                    debug_assert!(s.len_read == len, "read too many bytes");
+                    s.finished = true;
+                }
                 Ok(n)
             }
-            DataSpan::Delimited { delim: delim_span } => {
-                let delim = &self.command_buf[Range::from(*delim_span)];
-                if *delim_line_offset >= delim_line_buf.len() {
+            DataSpan::Delimited { delim } => {
+                if s.line_offset >= s.line_buf.len() {
                     if input.eof {
-                        if delim.is_empty() {
-                            // Keep returning EOF if called repeatedly after the
-                            // first EOF.
-                            return Ok(0);
-                        }
                         return Err(self.err(ErrorKind::UnterminatedData));
                     }
-                    delim_line_buf.clear();
-                    *delim_line_offset = 0;
-                    let line_span = input.read_line(delim_line_buf)?;
-                    if &delim_line_buf[Range::from(line_span)] == delim {
-                        // Clear the delimiter to signal EOF. An empty delimiter
-                        // is forbidden, so this avoids an auxiliary field.
-                        delim_span.start = delim_span.end;
+                    s.line_buf.clear();
+                    s.line_offset = 0;
+                    let line = input.read_line(&mut s.line_buf)?;
+                    if line.get(&s.line_buf) == delim.get(&self.command_buf) {
+                        s.finished = true;
                         return Ok(0);
                     }
                 }
-                let offset = *delim_line_offset;
-                let n = (delim_line_buf.len() - offset).min(buf.len());
-                buf[..n].copy_from_slice(&delim_line_buf[offset..offset + n]);
-                *delim_line_offset += n;
+                let off = s.line_offset;
+                let n = (s.line_buf.len() - off).min(buf.len());
+                buf[..n].copy_from_slice(&s.line_buf[off..off + n]);
+                s.line_offset += n;
+                s.len_read += n as u64;
                 Ok(n)
             }
         }
     }
 
     /// Reads to the end of the data stream without consuming it.
-    fn skip_data(&mut self) -> Result<()> {
-        let Some(data_state) = &mut self.data_state else {
-            panic!("invalid data stream state");
-        };
-        // TODO: Evaluate this ordering.
-        if data_state.reading_data.load(Ordering::SeqCst) {
-            let reached_eof = match *data_state.header.get_mut() {
-                DataSpan::Counted { len } => len == 0,
-                DataSpan::Delimited { delim } => delim.is_empty(),
-            };
-            if reached_eof {
-                return Ok(());
-            }
-            return Err(self.err(ErrorKind::UnfinishedData));
+    ///
+    /// # Safety
+    ///
+    /// Same as `Parser::read_data`.
+    unsafe fn skip_data(&self) -> Result<u64> {
+        // SAFETY: Guaranteed by caller.
+        let (input, s) = unsafe { (&mut *self.input.get(), &mut *self.data_state.get()) };
+        if s.closed {
+            return Err(self.err(ErrorKind::ClosedData));
         }
-        let input = self.input.get_mut();
-        match *data_state.header.get_mut() {
-            DataSpan::Counted {
-                len: mut len_remaining,
-            } => {
-                while len_remaining > 0 {
+        if s.finished {
+            return Ok(0);
+        }
+        let start_len = s.len_read;
+        match s.header {
+            DataSpan::Counted { len } => {
+                while s.len_read < len {
                     let buf = input.r.fill_buf()?;
                     if buf.is_empty() {
                         input.eof = true;
                         return Err(self.err(ErrorKind::DataUnexpectedEof));
                     }
-                    let n = usize::try_from(len_remaining)
+                    let n = usize::try_from(len - s.len_read)
                         .unwrap_or(usize::MAX)
                         .min(buf.len());
                     input.r.consume(n);
-                    len_remaining -= n as u64;
+                    s.len_read += n as u64;
                 }
             }
-            DataSpan::Delimited { delim: delim_span } => {
-                let delim = &self.command_buf[Range::from(delim_span)];
+            DataSpan::Delimited { delim } => {
+                let delim = delim.get(&self.command_buf);
                 loop {
                     if input.eof {
                         return Err(self.err(ErrorKind::UnterminatedData));
                     }
-                    let delim_line_buf = self.delim_line_buf.get_mut();
-                    delim_line_buf.clear();
-                    let line_span = input.read_line(delim_line_buf)?;
-                    if &delim_line_buf[Range::from(line_span)] == delim {
+                    s.line_buf.clear();
+                    let line = input.read_line(&mut s.line_buf)?;
+                    if line.get(&s.line_buf) == delim {
                         break;
                     }
+                    s.len_read += s.line_buf.len() as u64;
                 }
             }
         }
-        self.data_state = None;
-        Ok(())
+        s.finished = true;
+        Ok(s.len_read - start_len)
     }
 
     /// Reads a line from input into `self.line_buf`, stripping the LF
@@ -609,10 +593,10 @@ impl<R: BufRead> Parser<R> {
         //   syntax or semantics of the data. It could possibly be tracked by
         //   recording the size of the buffer with `fill_buf` before calling
         //   `read`.
-        let line = if self.data_state.is_none() {
-            self.line_remaining().to_owned()
-        } else {
+        let line = if self.data_opened.load(Ordering::Acquire) {
             b"<<parsing data stream>>".to_vec()
+        } else {
+            self.line_remaining().to_owned()
         };
         StreamError::Parse(ParseError { kind, line })
     }
@@ -624,14 +608,19 @@ impl<R: Debug> Debug for Parser<R> {
             .field("input", &self.input)
             .field("command_buf", &self.command_buf.as_bstr())
             .field("cursor", &self.cursor)
+            .field("data_opened", &self.data_opened)
             .field("data_state", &self.data_state)
-            .field("delim_line_buf", &self.delim_line_buf)
             .field("has_optional_lf", &self.has_optional_lf)
             .finish()
     }
 }
 
 impl Span {
+    #[inline(always)]
+    fn get<'a, B: AsRef<[u8]>>(&self, bytes: &'a B) -> &'a [u8] {
+        &bytes.as_ref()[Range::from(*self)]
+    }
+
     #[inline(always)]
     fn is_empty(&self) -> bool {
         !(self.start < self.end)
@@ -683,23 +672,22 @@ impl<R: BufRead> Input<R> {
 }
 
 impl<'a, B, R: BufRead> DataStream<'a, B, R> {
-    pub fn open(&self) -> result::Result<DataReader<'a, R>, DataStreamError> {
-        let Some(state) = &self.parser.data_state else {
-            return Err(DataStreamError::Closed);
-        };
-        // TODO: Evaluate this ordering.
-        match state
-            .reading_data
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        {
-            Ok(_) => Ok(DataReader {
+    /// Opens this data stream for reading. Only one instance of [`DataReader`]
+    /// can exist at a time.
+    #[inline]
+    pub fn open(&self) -> result::Result<DataReader<'a, R>, DataReaderError> {
+        // Check that `data_opened` was previously false and set it to true.
+        if !self.parser.data_opened.swap(true, Ordering::Acquire) {
+            Ok(DataReader {
                 parser: self.parser,
                 marker: PhantomData,
-            }),
-            Err(_) => Err(DataStreamError::AlreadyOpened),
+            })
+        } else {
+            Err(DataReaderError)
         }
     }
 
+    /// Gets the header for this data stream.
     #[inline(always)]
     pub fn header(&self) -> &DataHeader<B> {
         &self.header
@@ -724,8 +712,9 @@ impl<B: PartialEq, R> PartialEq for DataStream<'_, B, R> {
 impl<B: Eq, R> Eq for DataStream<'_, B, R> {}
 
 impl<R: BufRead> DataReader<'_, R> {
-    /// Reads from this data reader into the given buffer. Identical to
+    /// Reads from the data stream into the given buffer. Identical to
     /// [`DataReader::read`], but returns [`ParseError`].
+    #[inline]
     pub fn read_next(&mut self, buf: &mut [u8]) -> Result<usize> {
         // SAFETY: We have exclusive mutable access to all of the `UnsafeCell`
         // fields, because we are in the single instance of `DataReader`, and
@@ -734,24 +723,52 @@ impl<R: BufRead> DataReader<'_, R> {
         unsafe { self.parser.read_data(buf) }
     }
 
-    /// Skip reading the rest of the data stream and close the reader. The data
-    /// stream must be read to completion before the next call to
-    /// [`Parser::next`], otherwise an error will be returned there. It is not
-    /// recommended to use this when you intend to read the whole stream.
-    pub fn skip_rest(&mut self) -> Result<()> {
-        let Some(data_state) = &self.parser.data_state else {
-            panic!("invalid data stream state");
-        };
-        // TODO: Evaluate this ordering.
-        match data_state.reading_data.compare_exchange(
-            true,
-            false,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        ) {
-            Ok(_) => Ok(()),
-            Err(_) => Err(self.parser.err(ErrorKind::ClosedData)),
+    /// Skips reading the rest of the data stream and returns the number of
+    /// bytes skipped.
+    ///
+    /// Use this when only reading some of the data stream, otherwise the next
+    /// call to [`Parser::next`] will return an error. It is not recommended to
+    /// use this when you intend to read the whole stream.
+    ///
+    /// Unlike [`DataReader::read_next`], this returns a `u64`, because the
+    /// length skipped can be larger than `usize` on 32-bit platforms, as it
+    /// does not need to all fit in memory at once.
+    #[inline]
+    pub fn skip_rest(&mut self) -> Result<u64> {
+        // SAFETY: See `DataReader::read_next`.
+        unsafe { self.parser.skip_data() }
+    }
+
+    /// Closes the data stream and returns an error when it was not read to
+    /// completion.
+    #[inline]
+    pub fn close(&mut self) -> Result<()> {
+        // SAFETY: See `DataReader::read_next`.
+        let data_state = unsafe { &mut *self.parser.data_state.get() };
+        if data_state.closed {
+            Err(self.parser.err(ErrorKind::ClosedData))
+        } else if data_state.finished {
+            data_state.closed = true;
+            Ok(())
+        } else {
+            Err(self.parser.err(ErrorKind::UnfinishedData))
         }
+    }
+
+    /// Returns the number of bytes read from the data stream.
+    #[inline]
+    pub fn len_read(&self) -> u64 {
+        // SAFETY: See `DataReader::read_next`.
+        let data_state = unsafe { &*self.parser.data_state.get() };
+        data_state.len_read
+    }
+
+    /// Returns whether the data stream has been read to completion.
+    #[inline]
+    pub fn finished(&self) -> bool {
+        // SAFETY: See `DataReader::read_next`.
+        let data_state = unsafe { &*self.parser.data_state.get() };
+        data_state.finished
     }
 }
 
@@ -802,6 +819,7 @@ impl From<StreamError> for io::Error {
     }
 }
 
+#[inline]
 fn parse_u64(b: &[u8]) -> Option<u64> {
     // TODO: Make an integer parsing routine, to precisely control the grammar
     // and protect from upstream changes.
