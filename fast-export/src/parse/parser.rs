@@ -366,13 +366,13 @@ impl<R: BufRead> Parser<R> {
     ///
     // Corresponds to `read_next_command` in fast-import.c.
     fn bump_command(&mut self) -> io::Result<()> {
-        if self.input.get_mut().eof {
-            self.cursor.start = self.cursor.end;
-            return Ok(());
-        }
         loop {
+            if self.input.get_mut().eof {
+                self.cursor.start = self.cursor.end;
+                break;
+            }
             self.cursor = self.input.get_mut().read_line(&mut self.command_buf)?;
-            if !self.slice_cmd(self.cursor).starts_with(b"#") || self.input.get_mut().eof {
+            if !self.slice_cmd(self.cursor).starts_with(b"#") {
                 break;
             }
         }
