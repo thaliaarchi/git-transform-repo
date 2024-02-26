@@ -40,7 +40,7 @@ pub struct Parser<R> {
     /// guarding its construction with `Parser::data_opened`.
     input: UnsafeCell<Input<R>>,
 
-    /// A buffer containing all of the current command.
+    /// A buffer containing all of the current command and its sub-commands.
     command_buf: Vec<u8>,
     /// The current selection in `command_buf`, which is being processed.
     cursor: Span,
@@ -289,14 +289,16 @@ impl<R: BufRead> Parser<R> {
     fn parse_blob(&mut self) -> Result<Command<'_, &[u8], R>> {
         self.bump_command()?;
         let mark = self.parse_mark()?;
-        let original_oid_span = self.parse_original_oid()?;
-        let data_span = self.parse_data()?;
+        let original_oid = self.parse_original_oid()?;
+        let data = self.parse_data()?;
 
         Ok(Command::Blob(Blob {
             mark,
-            original_oid: original_oid_span.map(|sp| OriginalOid { oid: self.get(sp) }),
+            original_oid: original_oid.map(|oid| OriginalOid {
+                oid: self.slice_cmd(oid),
+            }),
             data: DataStream {
-                header: data_span.expand(self),
+                header: data.slice(self),
                 parser: self,
             },
         }))
@@ -384,9 +386,9 @@ impl<R: BufRead> Parser<R> {
     // Corresponds to `parse_original_identifier` in fast-import.c.
     fn parse_original_oid(&mut self) -> Result<Option<Span>> {
         if self.eat_prefix(b"original-oid ") {
-            let original_oid_span = self.cursor;
+            let original_oid = self.cursor;
             self.bump_command()?;
-            Ok(Some(original_oid_span))
+            Ok(Some(original_oid))
         } else {
             Ok(None)
         }
@@ -398,13 +400,13 @@ impl<R: BufRead> Parser<R> {
             return Err(self.err(ErrorKind::ExpectedDataCommand));
         }
         let header = if self.eat_prefix(b"<<") {
-            let delim_span = self.cursor;
-            if delim_span.is_empty() {
+            let delim = self.cursor;
+            if delim.is_empty() {
                 return Err(self.err(ErrorKind::EmptyDelim));
-            } else if self.get(delim_span).contains(&b'\0') {
+            } else if self.slice_cmd(delim).contains(&b'\0') {
                 return Err(self.err(ErrorKind::DataDelimContainsNul));
             }
-            DataSpan::Delimited { delim: delim_span }
+            DataSpan::Delimited { delim }
         } else {
             let len = parse_u64(self.line_remaining())
                 .ok_or_else(|| self.err(ErrorKind::InvalidDataLength))?;
@@ -461,7 +463,7 @@ impl<R: BufRead> Parser<R> {
                     s.line_buf.clear();
                     s.line_offset = 0;
                     let line = input.read_line(&mut s.line_buf)?;
-                    if line.get(&s.line_buf) == delim.get(&self.command_buf) {
+                    if line.slice(&s.line_buf) == delim.slice(&self.command_buf) {
                         s.finished = true;
                         return Ok(0);
                     }
@@ -507,14 +509,14 @@ impl<R: BufRead> Parser<R> {
                 }
             }
             DataSpan::Delimited { delim } => {
-                let delim = delim.get(&self.command_buf);
+                let delim = delim.slice(&self.command_buf);
                 loop {
                     if input.eof {
                         return Err(self.err(ErrorKind::UnterminatedData));
                     }
                     s.line_buf.clear();
                     let line = input.read_line(&mut s.line_buf)?;
-                    if line.get(&s.line_buf) == delim {
+                    if line.slice(&s.line_buf) == delim {
                         break;
                     }
                     s.len_read += s.line_buf.len() as u64;
@@ -537,23 +539,23 @@ impl<R: BufRead> Parser<R> {
         }
         loop {
             self.cursor = self.input.get_mut().read_line(&mut self.command_buf)?;
-            if !self.get(self.cursor).starts_with(b"#") || self.input.get_mut().eof {
+            if !self.slice_cmd(self.cursor).starts_with(b"#") || self.input.get_mut().eof {
                 break;
             }
         }
         Ok(())
     }
 
-    /// Returns the text in the command at the span.
+    /// Borrows a range of the command.
     #[inline(always)]
-    fn get(&self, span: Span) -> &[u8] {
+    fn slice_cmd(&self, span: Span) -> &[u8] {
         &self.command_buf[Range::from(span)]
     }
 
     /// Returns the remainder of the line at the cursor.
     #[inline(always)]
     fn line_remaining(&self) -> &[u8] {
-        self.get(self.cursor)
+        self.slice_cmd(self.cursor)
     }
 
     /// Consumes text at the cursor on the current line, if it matches the
@@ -617,7 +619,7 @@ impl<R: Debug> Debug for Parser<R> {
 
 impl Span {
     #[inline(always)]
-    fn get<'a, B: AsRef<[u8]>>(&self, bytes: &'a B) -> &'a [u8] {
+    fn slice<'a, B: AsRef<[u8]>>(&self, bytes: &'a B) -> &'a [u8] {
         &bytes.as_ref()[Range::from(*self)]
     }
 
@@ -783,11 +785,11 @@ impl<R: BufRead> Read for DataReader<'_, R> {
 
 impl DataSpan {
     #[inline(always)]
-    fn expand<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> DataHeader<&'a [u8]> {
+    fn slice<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> DataHeader<&'a [u8]> {
         match *self {
             DataSpan::Counted { len } => DataHeader::Counted { len },
             DataSpan::Delimited { delim } => DataHeader::Delimited {
-                delim: parser.get(delim),
+                delim: parser.slice_cmd(delim),
             },
         }
     }
