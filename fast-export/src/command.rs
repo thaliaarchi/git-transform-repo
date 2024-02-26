@@ -7,7 +7,7 @@ use crate::parse::DataStream;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command<'a, B, R> {
     Blob(Blob<'a, B, R>),
-    Commit(Commit),
+    Commit(Commit<'a, B, R>),
     Tag(Tag),
     Reset(Reset),
     Ls(Ls),
@@ -29,7 +29,16 @@ pub struct Blob<'a, B, R> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Commit;
+pub struct Commit<'a, B, R> {
+    pub branch: Branch<B>,
+    pub mark: Option<Mark>,
+    pub original_oid: Option<OriginalOid<B>>,
+    pub author: Option<PersonIdent<B>>,
+    pub committer: PersonIdent<B>,
+    pub encoding: Option<Encoding<B>>,
+    pub message: DataStream<'a, B, R>,
+    // TODO
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tag;
@@ -88,6 +97,25 @@ pub struct OptionOther<B> {
     pub option: B,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Branch<B> {
+    pub branch: B,
+}
+
+/// An error from validating that a branch has a valid format for git.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GitBranchNameError {}
+
+impl<B> Branch<B> {
+    /// Validates a branch name according to the git format.
+    ///
+    // Corresponds to `check_refname_format` in refs.c (called by `new_branch`
+    // in fast-import.c).
+    pub fn validate_git(&self) -> Result<(), GitBranchNameError> {
+        todo!()
+    }
+}
+
 /// A reference to an object by an integer, which allows the front-end to recall
 /// it later without knowing its hash. The value `:0` is reserved and cannot be
 /// used as a mark.
@@ -118,6 +146,19 @@ impl Mark {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OriginalOid<B> {
     pub oid: B,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersonIdent<B> {
+    pub name: B,
+    pub email: B,
+    // TODO: Parse dates
+    pub date: B,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Encoding<B> {
+    pub encoding: B,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

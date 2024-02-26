@@ -21,12 +21,13 @@ blob ::=
     data_large
 
 commit ::=
+    # BUG: Branch can contain NUL, but comparisons use NUL-terminated.
     "commit " branch SEP
     mark?
     original_oid?
     ("author" (" " name)? " <" email "> " date SEP)?
     "committer" (" " name)? " <" email "> " date SEP
-    ("encoding " NOT_LF* SEP)?
+    ("encoding " NOT_LF_ONLY* SEP)?
     data_small
     ("from " objectish SEP)?
     ("merge " objectish SEP)*

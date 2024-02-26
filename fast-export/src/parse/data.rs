@@ -10,28 +10,21 @@ use thiserror::Error;
 
 use crate::{
     command::DataHeader,
-    parse::{ParseErrorKind as ErrorKind, Parser, Result, Span},
+    parse::{DataSpan, ParseErrorKind as ErrorKind, Parser, Result},
 };
 
 /// Metadata for the current data stream. It can be opened for reading with
 /// [`DataStream::open`].
 #[derive(Clone)]
 pub struct DataStream<'a, B, R> {
-    header: DataHeader<B>,
-    parser: &'a Parser<R>,
+    pub(super) header: DataHeader<B>,
+    pub(super) parser: &'a Parser<R>,
 }
 
 /// An exclusive handle for reading the current data stream.
 pub struct DataReader<'a, R> {
     parser: &'a Parser<R>,
     marker: PhantomData<&'a mut Parser<R>>,
-}
-
-/// Spanned version of [`DataHeader`].
-#[derive(Clone, Copy, Debug)]
-pub(super) enum DataSpan {
-    Counted { len: u64 },
-    Delimited { delim: Span },
 }
 
 /// The state for reading a data stream. `Parser::data_opened` ensures only one
@@ -282,24 +275,6 @@ impl<R: BufRead> Read for DataReader<'_, R> {
     #[inline(always)]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.read_next(buf).map_err(|err| err.into())
-    }
-}
-
-impl DataSpan {
-    #[inline(always)]
-    pub(super) fn slice<'a, R: BufRead>(
-        &self,
-        parser: &'a Parser<R>,
-    ) -> DataStream<'a, &'a [u8], R> {
-        DataStream {
-            header: match *self {
-                DataSpan::Counted { len } => DataHeader::Counted { len },
-                DataSpan::Delimited { delim } => DataHeader::Delimited {
-                    delim: delim.slice(&parser.command_buf),
-                },
-            },
-            parser,
-        }
     }
 }
 

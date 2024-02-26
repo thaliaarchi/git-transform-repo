@@ -11,8 +11,11 @@ use bstr::ByteSlice;
 use thiserror::Error;
 
 use crate::{
-    command::{Blob, Command, Done, Mark, OriginalOid, Progress},
-    parse::{DataSpan, DataState, Result},
+    command::{
+        Blob, Branch, Command, Commit, DataHeader, Done, Encoding, Mark, OriginalOid, PersonIdent,
+        Progress,
+    },
+    parse::{DataState, DataStream, Result},
 };
 
 /// A zero-copy pull parser for fast-export streams.
@@ -64,19 +67,6 @@ pub struct Parser<R> {
 // invariants of `Parser::input`.
 unsafe impl<R> Sync for Parser<R> {}
 
-/// A range of bytes within `command_buf`.
-///
-/// This is used instead of directly slicing `command_buf` so that ranges can be
-/// safely saved while the buffer is still being grown. After the full command
-/// has been read (except for a data stream, which is read separately),
-/// `command_buf` will not change until the next call to `next`, and slices can
-/// be made and returned to the caller.
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub(super) struct Span {
-    start: usize,
-    end: usize,
-}
-
 /// Input for a fast-export stream.
 pub(super) struct Input<R> {
     /// Reader for the fast-export stream.
@@ -104,6 +94,28 @@ pub struct ParseError {
 /// A kind of error from parsing a command in a fast-export stream.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
 pub enum ParseErrorKind {
+    /// The branch name contains NUL. fast-import accepts such branch names, but
+    /// silently truncates them to the first NUL.
+    #[error("branch name contains NUL")]
+    BranchContainsNul,
+    /// The person identifier contains NUL. fast-import does not read text after
+    /// NUL in such commands.
+    #[error("person identifier contains NUL")]
+    IdentContainsNul,
+    #[error("person identifier does not have '<' or '>'")]
+    IdentNoLtOrGt,
+    #[error("person identifier does not have '<' before '>'")]
+    IdentNoLtBeforeGt,
+    #[error("person identifier does not have '>' after '<'")]
+    IdentNoGtAfterLt,
+    #[error("person identifier does not have ' ' before '<'")]
+    IdentNoSpaceBeforeLt,
+    #[error("person identifier does not have ' ' after '>'")]
+    IdentNoSpaceAfterGt,
+    /// A `committer` command is required in a commit.
+    #[error("expected committer in commit")]
+    ExpectedCommitter,
+
     /// The mark is not a valid integer. fast-import allows more forms of
     /// ill-formatted integers than here.
     #[error("invalid mark")]
@@ -135,7 +147,7 @@ pub enum ParseErrorKind {
     /// fast-import accepts opening, but not closing, delimiters that contain
     /// NUL, so it will never terminate such data. This error detects that
     /// early.
-    #[error("data delimiter contains NUL ('\\0')")]
+    #[error("data delimiter contains NUL")]
     DataDelimContainsNul,
     /// fast-import accepts an empty delimiter, but receiving that is most
     /// likely an error, so we reject it.
@@ -154,6 +166,34 @@ pub enum ParseErrorKind {
 }
 
 use ParseErrorKind as ErrorKind;
+
+/// A range of bytes within `command_buf`.
+///
+/// This is used instead of directly slicing `command_buf` so that ranges can be
+/// safely saved while the buffer is still being grown. After the full command
+/// has been read (except for a data stream, which is read separately),
+/// `command_buf` will not change until the next call to `next`, and slices can
+/// be made and returned to the caller.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(super) struct Span {
+    start: usize,
+    end: usize,
+}
+
+/// Spanned version of [`DataHeader`].
+#[derive(Clone, Copy, Debug)]
+pub(super) enum DataSpan {
+    Counted { len: u64 },
+    Delimited { delim: Span },
+}
+
+/// Spanned version of [`PersonIdent`].
+struct PersonIdentSpan {
+    name: Span,
+    email: Span,
+    // TODO: Parse dates
+    date: Span,
+}
 
 impl<R: BufRead> Parser<R> {
     /// Creates a new `Parser` for reading the given input.
@@ -249,7 +289,38 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_new_commit` in fast-import.c.
     fn parse_commit(&mut self) -> Result<Command<'_, &[u8], R>> {
-        todo!()
+        let branch = self.cursor;
+        self.validate_branch(branch)?;
+        self.bump_command()?;
+        let mark = self.parse_mark()?;
+        let original_oid = self.parse_original_oid()?;
+        let author = self.parse_person_ident(b"author ")?;
+        let committer = self
+            .parse_person_ident(b"committer ")?
+            .ok_or_else(|| self.err(ErrorKind::ExpectedCommitter))?;
+        let encoding = self.parse_encoding()?;
+        // fast-import reads the message into memory with no size limit, unlike
+        // blobs, which switch to streaming when it exceeds --big-file-threshold
+        // (default 512 * 1024 * 1024).
+        let message = self.parse_data()?;
+        // TODO
+
+        Ok(Command::Commit(Commit {
+            branch: Branch {
+                branch: self.slice_cmd(branch),
+            },
+            mark,
+            original_oid: original_oid.map(|oid| OriginalOid {
+                oid: self.slice_cmd(oid),
+            }),
+            author: author.map(|author| author.slice(self)),
+            committer: committer.slice(self),
+            encoding: encoding.map(|encoding| Encoding {
+                encoding: self.slice_cmd(encoding),
+            }),
+            message: message.slice(self),
+            // TODO
+        }))
     }
 
     // Corresponds to `parse_new_tag` in fast-import.c.
@@ -337,6 +408,69 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
+    // Corresponds to `parse_ident` in fast-export.c.
+    fn parse_person_ident(&mut self, prefix: &[u8]) -> Result<Option<PersonIdentSpan>> {
+        if !self.eat_prefix(prefix) {
+            return Ok(None);
+        }
+        let ident = self.cursor;
+        // NUL may not appear in the name or email due to using `strcspn`.
+        if self.command_buf[Range::from(ident)].contains(&b'\0') {
+            return Err(self.err(ErrorKind::IdentContainsNul));
+        }
+
+        // TODO: If none of the date formats allow `<` or `>`, I can give better
+        // messages like "name contains '>'".
+        let Some(lt) = self.command_buf[Range::from(ident)]
+            .iter()
+            .position(|&b| matches!(b, b'<' | b'>'))
+        else {
+            return Err(self.err(ErrorKind::IdentNoLtOrGt));
+        };
+        let lt = ident.start + lt;
+        if self.command_buf[lt] != b'<' {
+            return Err(self.err(ErrorKind::IdentNoLtBeforeGt));
+        }
+        if lt > ident.start && self.command_buf[lt - 1] != b' ' {
+            return Err(self.err(ErrorKind::IdentNoSpaceBeforeLt));
+        }
+
+        let Some(gt) = self.command_buf[lt + 1..ident.end]
+            .iter()
+            .position(|&b| matches!(b, b'<' | b'>'))
+        else {
+            return Err(self.err(ErrorKind::IdentNoGtAfterLt));
+        };
+        let gt = lt + 1 + gt;
+        if self.command_buf[gt] != b'>' {
+            return Err(self.err(ErrorKind::IdentNoGtAfterLt));
+        }
+        if gt + 1 < ident.end && self.command_buf[gt + 1] != b' ' {
+            return Err(self.err(ErrorKind::IdentNoSpaceAfterGt));
+        }
+
+        // TODO: Parse dates
+
+        self.bump_command()?;
+
+        Ok(Some(PersonIdentSpan {
+            name: Span::from(ident.start..(lt - 2).max(ident.start)),
+            email: Span::from(lt + 1..gt - 1),
+            date: Span::from((gt + 2).min(ident.end)..ident.end),
+        }))
+    }
+
+    // Corresponds to part of `parse_new_commit` in fast-import.c.
+    fn parse_encoding(&mut self) -> Result<Option<Span>> {
+        if self.eat_prefix(b"encoding ") {
+            let encoding = self.cursor;
+            self.bump_command()?;
+            Ok(Some(encoding))
+        } else {
+            Ok(None)
+        }
+    }
+
     // Corresponds to `parse_and_store_blob` in fast-import.c.
     fn parse_data(&mut self) -> Result<DataSpan> {
         if !self.eat_prefix(b"data ") {
@@ -358,6 +492,19 @@ impl<R: BufRead> Parser<R> {
         self.data_state.get_mut().set(header, &mut self.data_opened);
         self.has_optional_lf = true;
         Ok(header)
+    }
+
+    /// Returns an error when the branch name is invalid.
+    ///
+    // Corresponds to `lookup_branch` and `new_branch` in fast-import.c.
+    #[inline]
+    fn validate_branch(&self, branch: Span) -> Result<()> {
+        if self.slice_cmd(branch).contains(&b'\0') {
+            return Err(self.err(ErrorKind::BranchContainsNul));
+        }
+        // The git-specific validation of `new_branch` is handled outside by
+        // `Branch::validate_git`, so the user can use this for any VCS.
+        Ok(())
     }
 
     /// Reads a line from input into `self.line_buf`, stripping the LF
@@ -450,41 +597,6 @@ impl<R: Debug> Debug for Parser<R> {
     }
 }
 
-impl Span {
-    #[inline(always)]
-    pub(super) fn slice<'a, B: AsRef<[u8]>>(&self, bytes: &'a B) -> &'a [u8] {
-        &bytes.as_ref()[Range::from(*self)]
-    }
-
-    #[inline(always)]
-    fn is_empty(&self) -> bool {
-        !(self.start < self.end)
-    }
-}
-
-impl From<Range<usize>> for Span {
-    #[inline(always)]
-    fn from(range: Range<usize>) -> Self {
-        Span {
-            start: range.start,
-            end: range.end,
-        }
-    }
-}
-
-impl From<Span> for Range<usize> {
-    #[inline(always)]
-    fn from(span: Span) -> Self {
-        span.start..span.end
-    }
-}
-
-impl Debug for Span {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}..{}", self.start, self.end)
-    }
-}
-
 impl<R: BufRead> Input<R> {
     /// Reads a line from `input` into `buf`, stripping the LF delimiter. Lines
     /// may contain any bytes (including NUL), except for LF.
@@ -528,6 +640,67 @@ impl From<StreamError> for io::Error {
         match err {
             StreamError::Parse(err) => io::Error::new(io::ErrorKind::InvalidData, err),
             StreamError::Io(err) => err,
+        }
+    }
+}
+
+impl Span {
+    #[inline(always)]
+    pub(super) fn slice<'a, B: AsRef<[u8]>>(&self, bytes: &'a B) -> &'a [u8] {
+        &bytes.as_ref()[Range::from(*self)]
+    }
+
+    #[inline(always)]
+    fn is_empty(&self) -> bool {
+        !(self.start < self.end)
+    }
+}
+
+impl From<Range<usize>> for Span {
+    #[inline(always)]
+    fn from(range: Range<usize>) -> Self {
+        Span {
+            start: range.start,
+            end: range.end,
+        }
+    }
+}
+
+impl From<Span> for Range<usize> {
+    #[inline(always)]
+    fn from(span: Span) -> Self {
+        span.start..span.end
+    }
+}
+
+impl Debug for Span {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "{}..{}", self.start, self.end)
+    }
+}
+
+impl DataSpan {
+    #[inline(always)]
+    fn slice<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> DataStream<'a, &'a [u8], R> {
+        DataStream {
+            header: match *self {
+                DataSpan::Counted { len } => DataHeader::Counted { len },
+                DataSpan::Delimited { delim } => DataHeader::Delimited {
+                    delim: parser.slice_cmd(delim),
+                },
+            },
+            parser,
+        }
+    }
+}
+
+impl PersonIdentSpan {
+    #[inline(always)]
+    fn slice<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> PersonIdent<&'a [u8]> {
+        PersonIdent {
+            name: parser.slice_cmd(self.name),
+            email: parser.slice_cmd(self.email),
+            date: parser.slice_cmd(self.date),
         }
     }
 }
