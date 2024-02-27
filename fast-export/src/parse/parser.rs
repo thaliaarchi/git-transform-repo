@@ -4,7 +4,7 @@ use std::{
     io::{self, BufRead},
     ops::Range,
     str,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::AtomicBool,
 };
 
 use bstr::ByteSlice;
@@ -15,7 +15,7 @@ use crate::{
         Blob, Branch, Command, Commit, DataHeader, Done, Encoding, Mark, OriginalOid, PersonIdent,
         Progress,
     },
-    parse::{DataState, DataStream, Result},
+    parse::{DataReaderError, DataState, DataStream, PResult},
 };
 
 /// A zero-copy pull parser for fast-export streams.
@@ -73,6 +73,8 @@ pub(super) struct Input<R> {
     pub(super) r: R,
     /// Whether the reader has reached EOF.
     pub(super) eof: bool,
+    /// The current line number.
+    pub(super) line: u64,
 }
 
 /// An error from parsing a fast-export stream, including IO errors.
@@ -80,20 +82,13 @@ pub(super) struct Input<R> {
 #[error(transparent)]
 pub enum StreamError {
     Parse(#[from] ParseError),
+    DataReader(#[from] DataReaderError),
     Io(#[from] io::Error),
-}
-
-/// An error from parsing a fast-export stream.
-#[derive(Clone, Error, PartialEq, Eq, Hash)]
-#[error("{kind}: {:?}", line.as_bstr())]
-pub struct ParseError {
-    pub kind: ParseErrorKind,
-    pub line: Vec<u8>,
 }
 
 /// A kind of error from parsing a command in a fast-export stream.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
-pub enum ParseErrorKind {
+pub enum ParseError {
     /// The branch name contains NUL. fast-import accepts such branch names, but
     /// silently truncates them to the first NUL.
     #[error("branch name contains NUL")]
@@ -130,14 +125,6 @@ pub enum ParseErrorKind {
     /// A `data` command is required here.
     #[error("expected 'data' command")]
     ExpectedDataCommand,
-    /// The data stream was not read to completion by [`DataReader`](super::DataReader)
-    /// before the next command was parsed. If you want to close it early, call
-    /// [`DataReader::skip_rest`](super::DataReader::skip_rest).
-    #[error("data stream was not read to the end")]
-    UnfinishedData,
-    /// The data reader has already been closed by [`DataReader::close`](super::DataReader::close).
-    #[error("data reader is closed")]
-    ClosedData,
     /// The length for a counted `data` command is not a valid integer.
     #[error("invalid data length")]
     InvalidDataLength,
@@ -164,8 +151,6 @@ pub enum ParseErrorKind {
     #[error("unexpected blank line")]
     UnexpectedBlank,
 }
-
-use ParseErrorKind as ErrorKind;
 
 /// A range of bytes within `command_buf`.
 ///
@@ -203,6 +188,7 @@ impl<R: BufRead> Parser<R> {
             input: UnsafeCell::new(Input {
                 r: input,
                 eof: false,
+                line: 0,
             }),
             command_buf: Vec::new(),
             cursor: Span::from(0..0),
@@ -218,7 +204,7 @@ impl<R: BufRead> Parser<R> {
     /// copied before calling `next` again to retain them.
     ///
     // Corresponds to the loop in `cmd_fast_import` in fast-import.c.
-    pub fn next(&mut self) -> Result<Command<'_, &[u8], R>> {
+    pub fn next(&mut self) -> PResult<Command<'_, &[u8], R>> {
         // Finish reading the previous data stream, if the user didn't.
         if !self.data_state.get_mut().finished() {
             self.skip_data()?;
@@ -265,14 +251,14 @@ impl<R: BufRead> Parser<R> {
         } else if self.eat_prefix(b"option ") {
             self.parse_option()
         } else if self.line_remaining().is_empty() {
-            Err(self.err(ErrorKind::UnexpectedBlank))
+            Err(ParseError::UnexpectedBlank.into())
         } else {
-            Err(self.err(ErrorKind::UnsupportedCommand))
+            Err(ParseError::UnsupportedCommand.into())
         }
     }
 
     // Corresponds to `parse_new_blob` in fast-import.c.
-    fn parse_blob(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_blob(&mut self) -> PResult<Command<'_, &[u8], R>> {
         self.bump_command()?;
         let mark = self.parse_mark()?;
         let original_oid = self.parse_original_oid()?;
@@ -288,7 +274,7 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_new_commit` in fast-import.c.
-    fn parse_commit(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_commit(&mut self) -> PResult<Command<'_, &[u8], R>> {
         let branch = self.cursor;
         self.validate_branch(branch)?;
         self.bump_command()?;
@@ -297,7 +283,7 @@ impl<R: BufRead> Parser<R> {
         let author = self.parse_person_ident(b"author ")?;
         let committer = self
             .parse_person_ident(b"committer ")?
-            .ok_or_else(|| self.err(ErrorKind::ExpectedCommitter))?;
+            .ok_or(ParseError::ExpectedCommitter)?;
         let encoding = self.parse_encoding()?;
         // fast-import reads the message into memory with no size limit, unlike
         // blobs, which switch to streaming when it exceeds --big-file-threshold
@@ -324,43 +310,43 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_new_tag` in fast-import.c.
-    fn parse_tag(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_tag(&mut self) -> PResult<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_reset_branch` in fast-import.c.
-    fn parse_reset(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_reset(&mut self) -> PResult<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_ls` in fast-import.c.
-    fn parse_ls(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_ls(&mut self) -> PResult<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_cat_blob` in fast-import.c.
-    fn parse_cat_blob(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_cat_blob(&mut self) -> PResult<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_get_mark` in fast-import.c.
-    fn parse_get_mark(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_get_mark(&mut self) -> PResult<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_checkpoint` in fast-import.c.
-    fn parse_checkpoint(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_checkpoint(&mut self) -> PResult<Command<'_, &[u8], R>> {
         self.has_optional_lf = true;
         Ok(Command::Checkpoint)
     }
 
     // Corresponds to `parse_alias` in fast-import.c.
-    fn parse_alias(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_alias(&mut self) -> PResult<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_progress` in fast-import.c.
-    fn parse_progress(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_progress(&mut self) -> PResult<Command<'_, &[u8], R>> {
         self.has_optional_lf = true;
         Ok(Command::Progress(Progress {
             message: self.line_remaining(),
@@ -368,12 +354,12 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_feature` in fast-import.c.
-    fn parse_feature(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_feature(&mut self) -> PResult<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_option` in fast-import.c.
-    fn parse_option(&mut self) -> Result<Command<'_, &[u8], R>> {
+    fn parse_option(&mut self) -> PResult<Command<'_, &[u8], R>> {
         todo!()
     }
 
@@ -385,12 +371,11 @@ impl<R: BufRead> Parser<R> {
     /// sign, parse errors, empty digits, and junk after the integer.
     ///
     // Corresponds to `parse_mark` in fast-import.c.
-    fn parse_mark(&mut self) -> Result<Option<Mark>> {
+    fn parse_mark(&mut self) -> PResult<Option<Mark>> {
         if self.eat_prefix(b"mark :") {
-            let mark =
-                parse_u64(self.line_remaining()).ok_or_else(|| self.err(ErrorKind::InvalidMark))?;
+            let mark = parse_u64(self.line_remaining()).ok_or(ParseError::InvalidMark)?;
             self.bump_command()?;
-            let mark = Mark::new(mark).ok_or_else(|| self.err(ErrorKind::ZeroMark))?;
+            let mark = Mark::new(mark).ok_or(ParseError::ZeroMark)?;
             Ok(Some(mark))
         } else {
             Ok(None)
@@ -398,7 +383,7 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_original_identifier` in fast-import.c.
-    fn parse_original_oid(&mut self) -> Result<Option<Span>> {
+    fn parse_original_oid(&mut self) -> PResult<Option<Span>> {
         if self.eat_prefix(b"original-oid ") {
             let original_oid = self.cursor;
             self.bump_command()?;
@@ -409,14 +394,14 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_ident` in fast-export.c.
-    fn parse_person_ident(&mut self, prefix: &[u8]) -> Result<Option<PersonIdentSpan>> {
+    fn parse_person_ident(&mut self, prefix: &[u8]) -> PResult<Option<PersonIdentSpan>> {
         if !self.eat_prefix(prefix) {
             return Ok(None);
         }
         let ident = self.cursor;
         // NUL may not appear in the name or email due to using `strcspn`.
         if self.command_buf[Range::from(ident)].contains(&b'\0') {
-            return Err(self.err(ErrorKind::IdentContainsNul));
+            return Err(ParseError::IdentContainsNul.into());
         }
 
         // TODO: If none of the date formats allow `<` or `>`, I can give better
@@ -425,28 +410,28 @@ impl<R: BufRead> Parser<R> {
             .iter()
             .position(|&b| matches!(b, b'<' | b'>'))
         else {
-            return Err(self.err(ErrorKind::IdentNoLtOrGt));
+            return Err(ParseError::IdentNoLtOrGt.into());
         };
         let lt = ident.start + lt;
         if self.command_buf[lt] != b'<' {
-            return Err(self.err(ErrorKind::IdentNoLtBeforeGt));
+            return Err(ParseError::IdentNoLtBeforeGt.into());
         }
         if lt > ident.start && self.command_buf[lt - 1] != b' ' {
-            return Err(self.err(ErrorKind::IdentNoSpaceBeforeLt));
+            return Err(ParseError::IdentNoSpaceBeforeLt.into());
         }
 
         let Some(gt) = self.command_buf[lt + 1..ident.end]
             .iter()
             .position(|&b| matches!(b, b'<' | b'>'))
         else {
-            return Err(self.err(ErrorKind::IdentNoGtAfterLt));
+            return Err(ParseError::IdentNoGtAfterLt.into());
         };
         let gt = lt + 1 + gt;
         if self.command_buf[gt] != b'>' {
-            return Err(self.err(ErrorKind::IdentNoGtAfterLt));
+            return Err(ParseError::IdentNoGtAfterLt.into());
         }
         if gt + 1 < ident.end && self.command_buf[gt + 1] != b' ' {
-            return Err(self.err(ErrorKind::IdentNoSpaceAfterGt));
+            return Err(ParseError::IdentNoSpaceAfterGt.into());
         }
 
         // TODO: Parse dates
@@ -461,7 +446,7 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to part of `parse_new_commit` in fast-import.c.
-    fn parse_encoding(&mut self) -> Result<Option<Span>> {
+    fn parse_encoding(&mut self) -> PResult<Option<Span>> {
         if self.eat_prefix(b"encoding ") {
             let encoding = self.cursor;
             self.bump_command()?;
@@ -472,21 +457,20 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_and_store_blob` in fast-import.c.
-    fn parse_data(&mut self) -> Result<DataSpan> {
+    fn parse_data(&mut self) -> PResult<DataSpan> {
         if !self.eat_prefix(b"data ") {
-            return Err(self.err(ErrorKind::ExpectedDataCommand));
+            return Err(ParseError::ExpectedDataCommand.into());
         }
         let header = if self.eat_prefix(b"<<") {
             let delim = self.cursor;
             if delim.is_empty() {
-                return Err(self.err(ErrorKind::EmptyDelim));
+                return Err(ParseError::EmptyDelim.into());
             } else if self.slice_cmd(delim).contains(&b'\0') {
-                return Err(self.err(ErrorKind::DataDelimContainsNul));
+                return Err(ParseError::DataDelimContainsNul.into());
             }
             DataSpan::Delimited { delim }
         } else {
-            let len = parse_u64(self.line_remaining())
-                .ok_or_else(|| self.err(ErrorKind::InvalidDataLength))?;
+            let len = parse_u64(self.line_remaining()).ok_or(ParseError::InvalidDataLength)?;
             DataSpan::Counted { len }
         };
         self.data_state.get_mut().set(header, &mut self.data_opened);
@@ -498,9 +482,9 @@ impl<R: BufRead> Parser<R> {
     ///
     // Corresponds to `lookup_branch` and `new_branch` in fast-import.c.
     #[inline]
-    fn validate_branch(&self, branch: Span) -> Result<()> {
+    fn validate_branch(&self, branch: Span) -> PResult<()> {
         if self.slice_cmd(branch).contains(&b'\0') {
-            return Err(self.err(ErrorKind::BranchContainsNul));
+            return Err(ParseError::BranchContainsNul.into());
         }
         // The git-specific validation of `new_branch` is handled outside by
         // `Branch::validate_git`, so the user can use this for any VCS.
@@ -563,25 +547,6 @@ impl<R: BufRead> Parser<R> {
             false
         }
     }
-
-    /// Creates a parse error at the cursor.
-    #[inline(never)]
-    pub(super) fn err(&self, kind: ParseErrorKind) -> StreamError {
-        // TODO: Improve error reporting:
-        // - Use an error reporting library like miette or Ariadne.
-        // - Track line in data stream.
-        // - Would it be useful to include the error range for `io::Error`s from
-        //   `self.input.r`? Such errors seem unlikely to be related to the
-        //   syntax or semantics of the data. It could possibly be tracked by
-        //   recording the size of the buffer with `fill_buf` before calling
-        //   `read`.
-        let line = if self.data_opened.load(Ordering::Acquire) {
-            b"<<parsing data stream>>".to_vec()
-        } else {
-            self.line_remaining().to_owned()
-        };
-        StreamError::Parse(ParseError { kind, line })
-    }
 }
 
 impl<R: Debug> Debug for Parser<R> {
@@ -614,16 +579,8 @@ impl<R: BufRead> Input<R> {
             // EOF is reached in `read_until` iff the delimiter is not included.
             self.eof = true;
         }
+        self.line += 1;
         Ok(Span::from(start..end))
-    }
-}
-
-impl Debug for ParseError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ParseError")
-            .field("kind", &self.kind)
-            .field("line", &self.line.as_bstr())
-            .finish()
     }
 }
 
@@ -639,6 +596,7 @@ impl From<StreamError> for io::Error {
     fn from(err: StreamError) -> Self {
         match err {
             StreamError::Parse(err) => io::Error::new(io::ErrorKind::InvalidData, err),
+            StreamError::DataReader(err) => io::Error::new(io::ErrorKind::Other, err),
             StreamError::Io(err) => err,
         }
     }
