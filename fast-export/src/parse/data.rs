@@ -6,7 +6,6 @@
 use std::{
     fmt::{self, Debug, Formatter},
     io::{self, BufRead, Read},
-    marker::PhantomData,
     ptr,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -29,7 +28,6 @@ pub struct DataStream<'a, B, R> {
 /// An exclusive handle for reading the current data stream.
 pub struct DataReader<'a, R> {
     parser: &'a Parser<R>,
-    marker: PhantomData<&'a mut Parser<R>>,
 }
 
 /// The state for reading a data stream. `Parser::data_opened` ensures only one
@@ -196,7 +194,6 @@ impl<'a, B, R: BufRead> DataStream<'a, B, R> {
         if !self.parser.data_opened.swap(true, Ordering::Acquire) {
             Ok(DataReader {
                 parser: self.parser,
-                marker: PhantomData,
             })
         } else {
             Err(DataReaderError::AlreadyOpened.into())
