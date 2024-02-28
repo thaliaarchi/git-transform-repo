@@ -63,7 +63,7 @@ pub struct Parser<R> {
     pub(super) data_state: UnsafeCell<DataState>,
 
     /// Whether the previous command ended with an optional LF.
-    has_optional_lf: bool,
+    skip_optional_lf: bool,
 }
 
 // SAFETY: All `UnsafeCell` fields are guaranteed only be modified by a single
@@ -199,7 +199,7 @@ impl<R: BufRead> Parser<R> {
             cursor: Span::from(0..0),
             data_opened: AtomicBool::new(false),
             data_state: UnsafeCell::new(DataState::new()),
-            has_optional_lf: false,
+            skip_optional_lf: false,
         }
     }
 
@@ -217,15 +217,6 @@ impl<R: BufRead> Parser<R> {
 
         self.command_buf.clear();
         self.bump_command()?;
-
-        // Consume an optional trailing LF from the previous command.
-        if self.has_optional_lf {
-            self.has_optional_lf = false;
-            if self.line_remaining().is_empty() {
-                self.command_buf.clear();
-                self.bump_command()?;
-            }
-        }
 
         if self.input.get_mut().eof {
             Ok(Command::Done(Done::Eof))
@@ -267,7 +258,7 @@ impl<R: BufRead> Parser<R> {
         self.bump_command()?;
         let mark = self.parse_mark()?;
         let original_oid = self.parse_original_oid()?;
-        let data = self.parse_data()?;
+        let data = self.parse_data_header()?;
 
         Ok(Command::Blob(Blob {
             mark,
@@ -290,10 +281,7 @@ impl<R: BufRead> Parser<R> {
             .parse_person_ident(b"committer ")?
             .ok_or(ParseError::ExpectedCommitter)?;
         let encoding = self.parse_encoding()?;
-        // fast-import reads the message into memory with no size limit, unlike
-        // blobs, which switch to streaming when it exceeds --big-file-threshold
-        // (default 512 * 1024 * 1024).
-        let message = self.parse_data()?;
+        let message = self.parse_data_small()?;
         // TODO
 
         Ok(Command::Commit(Commit {
@@ -309,7 +297,7 @@ impl<R: BufRead> Parser<R> {
             encoding: encoding.map(|encoding| Encoding {
                 encoding: self.slice_cmd(encoding),
             }),
-            message: message.slice(self),
+            message: self.slice_cmd(message),
             // TODO
         }))
     }
@@ -341,7 +329,7 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_checkpoint` in fast-import.c.
     fn parse_checkpoint(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        self.has_optional_lf = true;
+        self.skip_optional_lf = true;
         Ok(Command::Checkpoint)
     }
 
@@ -352,7 +340,7 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_progress` in fast-import.c.
     fn parse_progress(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        self.has_optional_lf = true;
+        self.skip_optional_lf = true;
         Ok(Command::Progress(Progress {
             message: self.line_remaining(),
         }))
@@ -461,8 +449,12 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
+    /// Parses a `data` command, but does not read its contents. git fast-import
+    /// reads blobs into memory or switches to streaming when they exceed
+    /// `--big-file-threshold` (default 512MiB).
+    ///
     // Corresponds to `parse_and_store_blob` in fast-import.c.
-    fn parse_data(&mut self) -> PResult<DataSpan> {
+    fn parse_data_header(&mut self) -> PResult<DataSpan> {
         if !self.eat_prefix(b"data ") {
             return Err(ParseError::ExpectedDataCommand.into());
         }
@@ -479,8 +471,20 @@ impl<R: BufRead> Parser<R> {
             DataSpan::Counted { len }
         };
         self.data_state.get_mut().set(header, &mut self.data_opened);
-        self.has_optional_lf = true;
+        self.skip_optional_lf = true;
         Ok(header)
+    }
+
+    /// Parses a `data` command and reads its contents into memory. git
+    /// fast-import reads commit and tag messages into memory with no size
+    /// limit.
+    ///
+    // Corresponds to `parse_data` in fast-import.c.
+    fn parse_data_small(&mut self) -> PResult<Span> {
+        let header = self.parse_data_header()?;
+        let start = self.command_buf.len();
+        let end = self.read_data_to_end(header)?;
+        Ok(Span::from(start..end))
     }
 
     /// Returns an error when the branch name is invalid.
@@ -502,13 +506,24 @@ impl<R: BufRead> Parser<R> {
     ///
     // Corresponds to `read_next_command` in fast-import.c.
     fn bump_command(&mut self) -> io::Result<()> {
+        let input = self.input.get_mut();
         loop {
-            if self.input.get_mut().eof {
+            if input.eof {
                 self.cursor.start = self.cursor.end;
                 break;
             }
-            self.cursor = self.input.get_mut().read_line(&mut self.command_buf)?;
-            if !self.slice_cmd(self.cursor).starts_with(b"#") {
+            self.cursor = input.read_line(&mut self.command_buf)?;
+            let line = self.cursor.slice(&self.command_buf);
+            if line.is_empty() {
+                if !self.skip_optional_lf {
+                    break;
+                }
+                // If we are at the start of the next command, but the LF is
+                // from the previous, clear it.
+                if self.cursor.start == 0 {
+                    self.command_buf.clear();
+                }
+            } else if line[0] != b'#' {
                 break;
             }
         }
@@ -529,7 +544,7 @@ impl<R: BufRead> Parser<R> {
 
     /// Consumes text at the cursor on the current line, if it matches the
     /// prefix, and returns whether the cursor was bumped.
-    //
+    ///
     // Corresponds to `skip_prefix` in git-compat-util.c
     #[inline(always)]
     fn eat_prefix(&mut self, prefix: &[u8]) -> bool {
@@ -562,7 +577,7 @@ impl<R: Debug> Debug for Parser<R> {
             .field("cursor", &self.cursor)
             .field("data_opened", &self.data_opened)
             .field("data_state", &self.data_state)
-            .field("has_optional_lf", &self.has_optional_lf)
+            .field("skip_optional_lf", &self.skip_optional_lf)
             .finish()
     }
 }

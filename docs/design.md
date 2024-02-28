@@ -116,6 +116,13 @@ usage is better left to it as a library, though.
 Printing to the console should be better controlled with verbosity levels and
 have more useful status information, redrawn with ANSI escape sequences.
 
+### Directly constructing git repos
+
+What about directly constructing a git repo, instead of emitting a fast-export
+stream for git fast-import? What parts of git does fast-import use, that are not
+its parsing? If the surface area is small, or replicable with libgit2, maybe I
+could have a more flexible library-driven import.
+
 ## Repo diffs
 
 I usually use filter-repo in an iterative process, refining the resulting repo,

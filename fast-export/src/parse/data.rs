@@ -67,8 +67,40 @@ pub enum DataReaderError {
 }
 
 impl<R: BufRead> Parser<R> {
-    /// Reads from the current data stream into the given buffer. Exclusivity is
-    /// not checked.
+    /// Reads all of the described data stream into `self.command_buf`.
+    pub(super) fn read_data_to_end(&mut self, header: DataSpan) -> PResult<usize> {
+        let input = self.input.get_mut();
+        match header {
+            DataSpan::Counted { len } => {
+                if usize::try_from(len).is_err() {
+                    return Err(io::ErrorKind::OutOfMemory.into());
+                }
+                // When `Read::read_buf` is stabilized, it might be worth using
+                // it directly.
+                let start = self.command_buf.len();
+                let n = (&mut input.r)
+                    .take(len)
+                    .read_to_end(&mut self.command_buf)?;
+                input.line += count_lf(&self.command_buf[start..]);
+                if (n as u64) < len {
+                    return Err(ParseError::DataUnexpectedEof.into());
+                }
+                debug_assert!(n as u64 == len, "misbehaving Take implementation");
+                Ok(n)
+            }
+            DataSpan::Delimited { delim } => loop {
+                let len = self.command_buf.len();
+                let line = input.read_line(&mut self.command_buf)?;
+                if line.slice(&self.command_buf) == delim.slice(&self.command_buf) {
+                    self.command_buf.truncate(len);
+                    return Ok(len);
+                }
+            },
+        }
+    }
+
+    /// Reads from the current data stream into the given buffer. Mutation
+    /// exclusivity is not checked.
     ///
     /// # Safety
     ///
@@ -93,13 +125,13 @@ impl<R: BufRead> Parser<R> {
                     .unwrap_or(usize::MAX)
                     .min(buf.len());
                 let n = input.r.read(&mut buf[..end])?;
-                debug_assert!(n <= end, "misbehaving BufRead implementation");
+                debug_assert!(n <= end, "misbehaving Read implementation");
                 s.len_read += n as u64;
                 if s.len_read >= len {
                     debug_assert!(s.len_read == len, "read too many bytes");
                     s.finished = true;
                 }
-                input.line += buf.iter().filter(|&&b| b == b'\n').count() as u64;
+                input.line += count_lf(buf);
                 Ok(n)
             }
             DataSpan::Delimited { delim } => {
@@ -133,8 +165,8 @@ impl<R: BufRead> Parser<R> {
         unsafe { self.skip_data_cell() }
     }
 
-    /// Reads to the end of the data stream without consuming it. Exclusivity is
-    /// not checked.
+    /// Reads to the end of the data stream without consuming it. Mutation
+    /// exclusivity is not checked.
     ///
     /// # Safety
     ///
@@ -160,7 +192,7 @@ impl<R: BufRead> Parser<R> {
                     let n = usize::try_from(len - s.len_read)
                         .unwrap_or(usize::MAX)
                         .min(buf.len());
-                    input.line += buf.iter().filter(|&&b| b == b'\n').count() as u64;
+                    input.line += count_lf(buf);
                     input.r.consume(n);
                     s.len_read += n as u64;
                 }
@@ -320,6 +352,10 @@ impl DataState {
     pub(super) fn finished(&self) -> bool {
         self.finished
     }
+}
+
+fn count_lf(buf: &[u8]) -> u64 {
+    buf.iter().filter(|&&b| b == b'\n').count() as u64
 }
 
 #[cfg(test)]
