@@ -169,6 +169,11 @@ pub enum ParseError {
     UnexpectedBlank,
 }
 
+/// Converts the type to a byte slice for slicing with a `Span`.
+pub(super) trait Sliceable<'a> {
+    fn as_slice(&'a self) -> &'a [u8];
+}
+
 /// A range of bytes within `Parser::command_buf`.
 ///
 /// This is used instead of directly slicing `Parser::command_buf` so that
@@ -285,9 +290,12 @@ impl<R: BufRead> Parser<R> {
         Ok(Command::Blob(Blob {
             mark,
             original_oid: original_oid.map(|oid| OriginalOid {
-                oid: self.slice_cmd(oid),
+                oid: oid.slice(self),
             }),
-            data: data.slice(self),
+            data: DataStream {
+                header: data.slice(self),
+                parser: self,
+            },
         }))
     }
 
@@ -320,19 +328,19 @@ impl<R: BufRead> Parser<R> {
 
         Ok(Command::Commit(Commit {
             branch: Branch {
-                branch: self.slice_cmd(branch),
+                branch: branch.slice(self),
             },
             mark,
             original_oid: original_oid.map(|oid| OriginalOid {
-                oid: self.slice_cmd(oid),
+                oid: oid.slice(self),
             }),
             author: author.map(|author| author.slice(self)),
             committer: committer.slice(self),
             encoding: encoding.map(|encoding| Encoding {
-                encoding: self.slice_cmd(encoding),
+                encoding: encoding.slice(self),
             }),
-            message: self.slice_cmd(message),
-            from: from.map(|from| from.slice(&self.command_buf)),
+            message: message.slice(self),
+            from: from.map(|from| from.slice(self)),
             merge: &self.commitish_scratch,
             // TODO
         }))
@@ -404,7 +412,7 @@ impl<R: BufRead> Parser<R> {
         if self.eat_prefix(b"mark ") {
             let mark = self.cursor;
             self.bump_command()?;
-            Mark::parse(self.slice_cmd(mark)).map(Some)
+            Mark::parse(mark.slice(self)).map(Some)
         } else {
             Ok(None)
         }
@@ -455,39 +463,36 @@ impl<R: BufRead> Parser<R> {
         if !self.eat_prefix(prefix) {
             return Ok(None);
         }
-        let ident = self.cursor;
+        let cursor = self.cursor;
+        let ident = cursor.slice(self);
         // NUL may not appear in the name or email due to using `strcspn`.
-        if self.command_buf[Range::from(ident)].contains(&b'\0') {
+        if ident.contains(&b'\0') {
             return Err(ParseError::IdentContainsNul.into());
         }
 
         // TODO: If none of the date formats allow `<` or `>`, I can give better
         // messages like "name contains '>'".
-        let Some(lt) = self.command_buf[Range::from(ident)]
-            .iter()
-            .position(|&b| matches!(b, b'<' | b'>'))
-        else {
+        let Some(lt) = ident.iter().position(|&b| matches!(b, b'<' | b'>')) else {
             return Err(ParseError::IdentNoLtOrGt.into());
         };
-        let lt = ident.start + lt;
-        if self.command_buf[lt] != b'<' {
+        if ident[lt] != b'<' {
             return Err(ParseError::IdentNoLtBeforeGt.into());
         }
-        if lt > ident.start && self.command_buf[lt - 1] != b' ' {
+        if lt != 0 && ident[lt - 1] != b' ' {
             return Err(ParseError::IdentNoSpaceBeforeLt.into());
         }
 
-        let Some(gt) = self.command_buf[lt + 1..ident.end]
+        let Some(gt) = ident[lt + 1..]
             .iter()
             .position(|&b| matches!(b, b'<' | b'>'))
         else {
             return Err(ParseError::IdentNoGtAfterLt.into());
         };
         let gt = lt + 1 + gt;
-        if self.command_buf[gt] != b'>' {
+        if ident[gt] != b'>' {
             return Err(ParseError::IdentNoGtAfterLt.into());
         }
-        if gt + 1 < ident.end && self.command_buf[gt + 1] != b' ' {
+        if gt + 1 >= ident.len() || ident[gt + 1] != b' ' {
             return Err(ParseError::IdentNoSpaceAfterGt.into());
         }
 
@@ -495,10 +500,12 @@ impl<R: BufRead> Parser<R> {
 
         self.bump_command()?;
 
+        let lt = cursor.start + lt;
+        let gt = cursor.start + gt;
         Ok(Some(PersonIdentSpan {
-            name: Span::from(ident.start..(lt - 2).max(ident.start)),
+            name: Span::from(cursor.start..(lt - 2).max(cursor.start)),
             email: Span::from(lt + 1..gt - 1),
-            date: Span::from((gt + 2).min(ident.end)..ident.end),
+            date: Span::from((gt + 2).min(cursor.end)..cursor.end),
         }))
     }
 
@@ -526,7 +533,7 @@ impl<R: BufRead> Parser<R> {
             let delim = self.cursor;
             if delim.is_empty() {
                 return Err(ParseError::EmptyDelim.into());
-            } else if self.slice_cmd(delim).contains(&b'\0') {
+            } else if delim.slice(self).contains(&b'\0') {
                 return Err(ParseError::DataDelimContainsNul.into());
             }
             DataSpan::Delimited { delim }
@@ -547,8 +554,8 @@ impl<R: BufRead> Parser<R> {
     fn parse_data_small(&mut self) -> PResult<Span> {
         let header = self.parse_data_header()?;
         let start = self.command_buf.len();
-        let end = self.read_data_to_end(header)?;
-        Ok(Span::from(start..end))
+        self.read_data_to_end(header)?;
+        Ok(Span::from(start..self.command_buf.len()))
     }
 
     /// Returns an error when the branch name is invalid.
@@ -556,7 +563,7 @@ impl<R: BufRead> Parser<R> {
     // Corresponds to `lookup_branch` and `new_branch` in fast-import.c.
     #[inline]
     fn validate_branch(&self, branch: Span) -> PResult<()> {
-        if self.slice_cmd(branch).contains(&b'\0') {
+        if branch.slice(self).contains(&b'\0') {
             return Err(ParseError::BranchContainsNul.into());
         }
         // The git-specific validation of `new_branch` is handled outside by
@@ -578,32 +585,28 @@ impl<R: BufRead> Parser<R> {
             }
             self.cursor = input.read_line(&mut self.command_buf)?;
             let line = self.cursor.slice(&self.command_buf);
-            if line.is_empty() {
-                if !self.skip_optional_lf {
-                    break;
+            if self.skip_optional_lf {
+                self.skip_optional_lf = false;
+                if line.is_empty() {
+                    // If we are at the start of a command, but the LF is from
+                    // the previous, clear it.
+                    if self.cursor.start == 0 {
+                        self.command_buf.clear();
+                    }
+                    continue;
                 }
-                // If we are at the start of the next command, but the LF is
-                // from the previous, clear it.
-                if self.cursor.start == 0 {
-                    self.command_buf.clear();
-                }
-            } else if line[0] != b'#' {
+            }
+            if !line.starts_with(b"#") {
                 break;
             }
         }
         Ok(())
     }
 
-    /// Borrows a range of the command.
-    #[inline(always)]
-    fn slice_cmd(&self, span: Span) -> &[u8] {
-        &self.command_buf[Range::from(span)]
-    }
-
     /// Returns the remainder of the line at the cursor.
     #[inline(always)]
     fn line_remaining(&self) -> &[u8] {
-        self.slice_cmd(self.cursor)
+        self.cursor.slice(self)
     }
 
     /// Consumes text at the cursor on the current line, if it matches the
@@ -688,10 +691,46 @@ impl From<StreamError> for io::Error {
     }
 }
 
-impl Span {
+impl<'a> Sliceable<'a> for [u8] {
     #[inline(always)]
-    pub(super) fn slice<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
-        &bytes[Range::from(*self)]
+    fn as_slice(&'a self) -> &'a [u8] {
+        self
+    }
+}
+
+impl<'a> Sliceable<'a> for Vec<u8> {
+    #[inline(always)]
+    fn as_slice(&'a self) -> &'a [u8] {
+        self
+    }
+}
+
+impl<'a, R> Sliceable<'a> for Parser<R> {
+    #[inline(always)]
+    fn as_slice(&'a self) -> &'a [u8] {
+        &self.command_buf
+    }
+}
+
+impl Span {
+    #[cfg(debug_assertions)]
+    #[inline(always)]
+    pub(super) fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> &'a [u8] {
+        &bytes.as_slice()[Range::from(*self)]
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[inline(always)]
+    pub(super) fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> &'a [u8] {
+        // SAFETY: It is up to the caller to ensure that spans are in bounds.
+        //
+        // Most spans are for `Parser::command_buf`. Since its length
+        // monotonically increases during a call to `Parser::next`, as long as a
+        // span is used in the same call, only its construction is relevant.
+        // Spans used for other buffers, such as when reading data, have
+        // different considerations. Since spans do not leak into the public
+        // API, the surface area is manageable.
+        unsafe { bytes.as_slice().get_unchecked(Range::from(*self)) }
     }
 
     #[inline(always)]
@@ -741,7 +780,7 @@ impl CommitishSpan {
     fn parse<R: BufRead>(commitish: Span, parser: &Parser<R>) -> PResult<Self> {
         // TODO: How much of `parse_objectish` should be here or in the
         // front-end?
-        let commitish_bytes = parser.slice_cmd(commitish);
+        let commitish_bytes = commitish.slice(parser);
         if commitish_bytes.starts_with(b":") {
             Mark::parse(commitish_bytes).map(CommitishSpan::Mark)
         } else {
@@ -750,7 +789,7 @@ impl CommitishSpan {
     }
 
     #[inline(always)]
-    fn slice<'a>(&self, bytes: &'a [u8]) -> Commitish<&'a [u8]> {
+    fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> Commitish<&'a [u8]> {
         match *self {
             CommitishSpan::Mark(mark) => Commitish::Mark(mark),
             CommitishSpan::BranchOrOid(commitish) => Commitish::BranchOrOid(commitish.slice(bytes)),
@@ -760,26 +799,23 @@ impl CommitishSpan {
 
 impl PersonIdentSpan {
     #[inline(always)]
-    fn slice<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> PersonIdent<&'a [u8]> {
+    fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> PersonIdent<&'a [u8]> {
         PersonIdent {
-            name: parser.slice_cmd(self.name),
-            email: parser.slice_cmd(self.email),
-            date: parser.slice_cmd(self.date),
+            name: self.name.slice(bytes),
+            email: self.email.slice(bytes),
+            date: self.date.slice(bytes),
         }
     }
 }
 
 impl DataSpan {
     #[inline(always)]
-    fn slice<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> DataStream<'a, &'a [u8], R> {
-        DataStream {
-            header: match *self {
-                DataSpan::Counted { len } => DataHeader::Counted { len },
-                DataSpan::Delimited { delim } => DataHeader::Delimited {
-                    delim: parser.slice_cmd(delim),
-                },
+    fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> DataHeader<&'a [u8]> {
+        match *self {
+            DataSpan::Counted { len } => DataHeader::Counted { len },
+            DataSpan::Delimited { delim } => DataHeader::Delimited {
+                delim: delim.slice(bytes),
             },
-            parser,
         }
     }
 }

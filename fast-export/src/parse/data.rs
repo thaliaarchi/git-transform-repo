@@ -68,7 +68,7 @@ pub enum DataReaderError {
 
 impl<R: BufRead> Parser<R> {
     /// Reads all of the described data stream into `self.command_buf`.
-    pub(super) fn read_data_to_end(&mut self, header: DataSpan) -> PResult<usize> {
+    pub(super) fn read_data_to_end(&mut self, header: DataSpan) -> PResult<()> {
         let input = self.input.get_mut();
         match header {
             DataSpan::Counted { len } => {
@@ -86,14 +86,14 @@ impl<R: BufRead> Parser<R> {
                     return Err(ParseError::DataUnexpectedEof.into());
                 }
                 debug_assert!(n as u64 == len, "misbehaving Take implementation");
-                Ok(n)
+                Ok(())
             }
             DataSpan::Delimited { delim } => loop {
                 let len = self.command_buf.len();
                 let line = input.read_line(&mut self.command_buf)?;
                 if line.slice(&self.command_buf) == delim.slice(&self.command_buf) {
                     self.command_buf.truncate(len);
-                    return Ok(len);
+                    return Ok(());
                 }
             },
         }
