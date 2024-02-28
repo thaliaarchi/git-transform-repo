@@ -7,6 +7,7 @@ use std::{
     cell::UnsafeCell,
     fmt::{self, Debug, Formatter},
     io::{self, BufRead},
+    mem,
     ops::Range,
     str,
     sync::atomic::AtomicBool,
@@ -17,8 +18,8 @@ use thiserror::Error;
 
 use crate::{
     command::{
-        Blob, Branch, Command, Commit, DataHeader, Done, Encoding, Mark, OriginalOid, PersonIdent,
-        Progress,
+        Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, Mark, OriginalOid,
+        PersonIdent, Progress,
     },
     parse::{DataReaderError, DataState, DataStream, PResult},
 };
@@ -37,20 +38,21 @@ use crate::{
 pub struct Parser<R> {
     /// The input reader being parsed.
     ///
-    /// `input` is mutated in two separate ways: while reading a command with
-    /// `Parser::next` or while reading a data stream with a `DataReader`.
+    /// `self.input` is mutated in two separate ways: while reading a command
+    /// with `Parser::next` or while reading a data stream with a `DataReader`.
     /// `Parser::next` already has exclusive access to the parser, because it
     /// requires `&mut`, and the caller cannot retain any `&`-references during
     /// it. Reading from the `DataReader` happens after `&`-slices of
-    /// `command_buf` have been returned to the caller, so it uses `UnsafeCell`
-    /// to modify `input` and `data_state`. That is safely performed by ensuring
-    /// only a single instance of `DataReader` can be constructed at a time by
-    /// guarding its construction with `Parser::data_opened`.
+    /// `self.command_buf` have been returned to the caller, so it uses
+    /// `UnsafeCell` to modify `self.input` and `self.data_state`. That is
+    /// safely performed by ensuring only a single instance of `DataReader` can
+    /// be constructed at a time by guarding its construction with
+    /// `Parser::data_opened`.
     pub(super) input: UnsafeCell<Input<R>>,
 
     /// A buffer containing all of the current command and its sub-commands.
     pub(super) command_buf: Vec<u8>,
-    /// The current selection in `command_buf`, which is being processed.
+    /// The current selection in `self.command_buf`, which is being processed.
     cursor: Span,
 
     /// Whether a `DataReader` has been opened for reading. This guards
@@ -61,6 +63,13 @@ pub struct Parser<R> {
     ///
     /// It may only be mutated under `&` within the `DataReader`.
     pub(super) data_state: UnsafeCell<DataState>,
+
+    /// A list of commitish for the current command, to reuse allocations. It
+    /// slices into `self.command_buf`, but is `'static` to allow
+    /// self-references.
+    commitish_scratch: Vec<Commitish<&'static [u8]>>,
+    /// The spans that are converted into `self.commitish_scratch`.
+    commitish_span_scratch: Vec<CommitishSpan>,
 
     /// Whether the previous command ended with an optional LF.
     skip_optional_lf: bool,
@@ -116,6 +125,9 @@ pub enum ParseError {
     #[error("expected committer in commit")]
     ExpectedCommitter,
 
+    /// A mark must start with `:`.
+    #[error("mark does not start with ':'")]
+    MarkMissingColon,
     /// The mark is not a valid integer. fast-import allows more forms of
     /// ill-formatted integers than here.
     #[error("invalid mark")]
@@ -124,7 +136,7 @@ pub enum ParseError {
     /// set.
     // TODO: Revisit this after parsing fast-export streams from git fast-export
     // and other tools.
-    #[error("cannot use :0 as a mark")]
+    #[error("cannot use ':0' as a mark")]
     ZeroMark,
 
     /// A `data` command is required here.
@@ -157,24 +169,24 @@ pub enum ParseError {
     UnexpectedBlank,
 }
 
-/// A range of bytes within `command_buf`.
+/// A range of bytes within `Parser::command_buf`.
 ///
-/// This is used instead of directly slicing `command_buf` so that ranges can be
-/// safely saved while the buffer is still being grown. After the full command
-/// has been read (except for a data stream, which is read separately),
-/// `command_buf` will not change until the next call to `next`, and slices can
-/// be made and returned to the caller.
+/// This is used instead of directly slicing `Parser::command_buf` so that
+/// ranges can be safely saved while the buffer is still being grown. After the
+/// full command has been read (except for a data stream, which is read
+/// separately), `Parser::command_buf` will not change until the next call to
+/// `Parser::next`, and slices can be made and returned to the caller.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(super) struct Span {
     start: usize,
     end: usize,
 }
 
-/// Spanned version of [`DataHeader`].
-#[derive(Clone, Copy, Debug)]
-pub(super) enum DataSpan {
-    Counted { len: u64 },
-    Delimited { delim: Span },
+/// Spanned version of [`Commitish`].
+#[derive(Clone, Debug)]
+enum CommitishSpan {
+    Mark(Mark),
+    BranchOrOid(Span),
 }
 
 /// Spanned version of [`PersonIdent`].
@@ -183,6 +195,13 @@ struct PersonIdentSpan {
     email: Span,
     // TODO: Parse dates
     date: Span,
+}
+
+/// Spanned version of [`DataHeader`].
+#[derive(Clone, Copy, Debug)]
+pub(super) enum DataSpan {
+    Counted { len: u64 },
+    Delimited { delim: Span },
 }
 
 impl<R: BufRead> Parser<R> {
@@ -199,6 +218,8 @@ impl<R: BufRead> Parser<R> {
             cursor: Span::from(0..0),
             data_opened: AtomicBool::new(false),
             data_state: UnsafeCell::new(DataState::new()),
+            commitish_scratch: Vec::new(),
+            commitish_span_scratch: Vec::new(),
             skip_optional_lf: false,
         }
     }
@@ -215,6 +236,7 @@ impl<R: BufRead> Parser<R> {
             self.skip_data()?;
         }
 
+        self.commitish_scratch.clear();
         self.command_buf.clear();
         self.bump_command()?;
 
@@ -282,7 +304,19 @@ impl<R: BufRead> Parser<R> {
             .ok_or(ParseError::ExpectedCommitter)?;
         let encoding = self.parse_encoding()?;
         let message = self.parse_data_small()?;
-        // TODO
+        self.bump_command()?;
+        let from = self.parse_from()?;
+        self.parse_merge()?;
+
+        self.commitish_scratch.clear();
+        self.commitish_scratch
+            .extend(self.commitish_span_scratch.iter().map(|commitish| {
+                let commitish = commitish.slice(&self.command_buf);
+                // SAFETY: `commitish_scratch` is cleared in `Parser::next`,
+                // before changes to `command_buf` are next made, so there's
+                // never a point where it points to invalid data.
+                unsafe { mem::transmute(commitish) }
+            }));
 
         Ok(Command::Commit(Commit {
             branch: Branch {
@@ -298,6 +332,8 @@ impl<R: BufRead> Parser<R> {
                 encoding: self.slice_cmd(encoding),
             }),
             message: self.slice_cmd(message),
+            from: from.map(|from| from.slice(&self.command_buf)),
+            merge: &self.commitish_scratch,
             // TODO
         }))
     }
@@ -365,11 +401,10 @@ impl<R: BufRead> Parser<R> {
     ///
     // Corresponds to `parse_mark` in fast-import.c.
     fn parse_mark(&mut self) -> PResult<Option<Mark>> {
-        if self.eat_prefix(b"mark :") {
-            let mark = parse_u64(self.line_remaining()).ok_or(ParseError::InvalidMark)?;
+        if self.eat_prefix(b"mark ") {
+            let mark = self.cursor;
             self.bump_command()?;
-            let mark = Mark::new(mark).ok_or(ParseError::ZeroMark)?;
-            Ok(Some(mark))
+            Mark::parse(self.slice_cmd(mark)).map(Some)
         } else {
             Ok(None)
         }
@@ -386,7 +421,36 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
-    // Corresponds to `parse_ident` in fast-export.c.
+    // Corresponds to `parse_from` in fast-import.c.
+    fn parse_from(&mut self) -> PResult<Option<CommitishSpan>> {
+        if self.eat_prefix(b"from ") {
+            let commitish = self.cursor;
+            self.bump_command()?;
+            CommitishSpan::parse(commitish, self).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    // Corresponds to `parse_merge` in fast-import.c.
+    fn parse_merge(&mut self) -> PResult<()> {
+        // Check that `commitish_scratch` was cleared by `Parser::next` and that
+        // it is not used for two commands at once.
+        debug_assert!(
+            self.commitish_scratch.is_empty(),
+            "commitish scratch populated before 'merge'",
+        );
+        self.commitish_span_scratch.clear();
+        while self.eat_prefix(b"merge ") {
+            let commitish = self.cursor;
+            self.bump_command()?;
+            self.commitish_span_scratch
+                .push(CommitishSpan::parse(commitish, self)?);
+        }
+        Ok(())
+    }
+
+    // Corresponds to `parse_ident` in fast-import.c.
     fn parse_person_ident(&mut self, prefix: &[u8]) -> PResult<Option<PersonIdentSpan>> {
         if !self.eat_prefix(prefix) {
             return Ok(None);
@@ -577,13 +641,15 @@ impl<R: Debug> Debug for Parser<R> {
             .field("cursor", &self.cursor)
             .field("data_opened", &self.data_opened)
             .field("data_state", &self.data_state)
+            .field("commitish_scratch", &self.commitish_scratch)
+            .field("commitish_span_scratch", &self.commitish_span_scratch)
             .field("skip_optional_lf", &self.skip_optional_lf)
             .finish()
     }
 }
 
 impl<R: BufRead> Input<R> {
-    /// Reads a line from `input` into `buf`, stripping the LF delimiter. Lines
+    /// Reads a line from `self.r` into `buf`, stripping the LF delimiter. Lines
     /// may contain any bytes (including NUL), except for LF.
     ///
     // Corresponds to `strbuf_getline_lf` in strbuf.c.
@@ -624,8 +690,8 @@ impl From<StreamError> for io::Error {
 
 impl Span {
     #[inline(always)]
-    pub(super) fn slice<'a, B: AsRef<[u8]>>(&self, bytes: &'a B) -> &'a [u8] {
-        &bytes.as_ref()[Range::from(*self)]
+    pub(super) fn slice<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
+        &bytes[Range::from(*self)]
     }
 
     #[inline(always)]
@@ -657,17 +723,37 @@ impl Debug for Span {
     }
 }
 
-impl DataSpan {
+impl Mark {
+    // Corresponds to `parse_mark_ref` in fast-import.c.
+    #[inline]
+    fn parse(mark: &[u8]) -> PResult<Self> {
+        let [b':', mark @ ..] = mark else {
+            return Err(ParseError::MarkMissingColon.into());
+        };
+        let mark = parse_u64(mark).ok_or(ParseError::InvalidMark)?;
+        let mark = Mark::new(mark).ok_or(ParseError::ZeroMark)?;
+        Ok(mark)
+    }
+}
+
+impl CommitishSpan {
+    // Corresponds to `parse_objectish` and `parse_merge` in fast-import.c.
+    fn parse<R: BufRead>(commitish: Span, parser: &Parser<R>) -> PResult<Self> {
+        // TODO: How much of `parse_objectish` should be here or in the
+        // front-end?
+        let commitish_bytes = parser.slice_cmd(commitish);
+        if commitish_bytes.starts_with(b":") {
+            Mark::parse(commitish_bytes).map(CommitishSpan::Mark)
+        } else {
+            Ok(CommitishSpan::BranchOrOid(commitish))
+        }
+    }
+
     #[inline(always)]
-    fn slice<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> DataStream<'a, &'a [u8], R> {
-        DataStream {
-            header: match *self {
-                DataSpan::Counted { len } => DataHeader::Counted { len },
-                DataSpan::Delimited { delim } => DataHeader::Delimited {
-                    delim: parser.slice_cmd(delim),
-                },
-            },
-            parser,
+    fn slice<'a>(&self, bytes: &'a [u8]) -> Commitish<&'a [u8]> {
+        match *self {
+            CommitishSpan::Mark(mark) => Commitish::Mark(mark),
+            CommitishSpan::BranchOrOid(commitish) => Commitish::BranchOrOid(commitish.slice(bytes)),
         }
     }
 }
@@ -683,6 +769,21 @@ impl PersonIdentSpan {
     }
 }
 
+impl DataSpan {
+    #[inline(always)]
+    fn slice<'a, R: BufRead>(&self, parser: &'a Parser<R>) -> DataStream<'a, &'a [u8], R> {
+        DataStream {
+            header: match *self {
+                DataSpan::Counted { len } => DataHeader::Counted { len },
+                DataSpan::Delimited { delim } => DataHeader::Delimited {
+                    delim: parser.slice_cmd(delim),
+                },
+            },
+            parser,
+        }
+    }
+}
+
 #[inline]
 fn parse_u64(b: &[u8]) -> Option<u64> {
     // TODO: Make an integer parsing routine, to precisely control the grammar
@@ -690,6 +791,6 @@ fn parse_u64(b: &[u8]) -> Option<u64> {
     if b.starts_with(b"+") {
         return None;
     }
-    // SAFETY: from_str_radix operates on byes and accepts only ASCII.
+    // SAFETY: `from_str_radix` operates on byes and accepts only ASCII.
     u64::from_str_radix(unsafe { str::from_utf8_unchecked(b) }, 10).ok()
 }

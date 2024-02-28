@@ -12,7 +12,7 @@ use crate::parse::DataStream;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command<'a, B, R> {
     Blob(Blob<'a, B, R>),
-    Commit(Commit<B>),
+    Commit(Commit<'a, B>),
     Tag(Tag),
     Reset(Reset),
     Ls(Ls),
@@ -34,7 +34,7 @@ pub struct Blob<'a, B, R> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Commit<B> {
+pub struct Commit<'a, B> {
     pub branch: Branch<B>,
     pub mark: Option<Mark>,
     pub original_oid: Option<OriginalOid<B>>,
@@ -42,6 +42,8 @@ pub struct Commit<B> {
     pub committer: PersonIdent<B>,
     pub encoding: Option<Encoding<B>>,
     pub message: B,
+    pub from: Option<Commitish<B>>,
+    pub merge: &'a [Commitish<B>],
     // TODO
 }
 
@@ -151,6 +153,13 @@ impl Mark {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OriginalOid<B> {
     pub oid: B,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Commitish<B> {
+    Mark(Mark),
+    // TODO: Parse branches and oids
+    BranchOrOid(B),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
