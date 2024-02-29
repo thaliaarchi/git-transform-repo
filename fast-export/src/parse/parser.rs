@@ -7,9 +7,7 @@ use std::{
     cell::UnsafeCell,
     fmt::{self, Debug, Formatter},
     io::{self, BufRead},
-    mem,
-    ops::Range,
-    str,
+    mem, str,
     sync::atomic::AtomicBool,
 };
 
@@ -18,10 +16,12 @@ use thiserror::Error;
 
 use crate::{
     command::{
-        Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, Mark, OriginalOid,
-        PersonIdent, Progress,
+        Blob, Branch, Command, Commit, Commitish, Done, Encoding, Mark, OriginalOid, Progress,
     },
-    parse::{DataReaderError, DataState, DataStream, Input, PResult},
+    parse::{
+        CommitishSpan, DataReaderError, DataSpan, DataState, DataStream, Input, PResult,
+        PersonIdentSpan, Sliceable, Span,
+    },
 };
 
 /// A zero-copy pull parser for fast-export streams.
@@ -33,8 +33,8 @@ use crate::{
 /// threads, to be processed in parallel.
 ///
 /// Commands are parsed separately from data streams. To read a data stream,
-/// open a [`DataReader`](super::DataReader) from the returned [`DataStream`](super::DataStream)
-/// with [`DataStream::open`](super::DataStream::open).
+/// open a [`DataReader`](super::DataReader) from the returned [`DataStream`](DataStream)
+/// with [`DataStream::open`](DataStream::open).
 pub struct Parser<R> {
     /// The input reader being parsed.
     ///
@@ -154,46 +154,6 @@ pub enum ParseError {
     /// Unexpected blank line instead of a command.
     #[error("unexpected blank line")]
     UnexpectedBlank,
-}
-
-/// Converts the type to a byte slice for slicing with a `Span`.
-pub(super) trait Sliceable<'a> {
-    fn as_slice(&'a self) -> &'a [u8];
-}
-
-/// A range of bytes within `Parser::command_buf`.
-///
-/// This is used instead of directly slicing `Parser::command_buf` so that
-/// ranges can be safely saved while the buffer is still being grown. After the
-/// full command has been read (except for a data stream, which is read
-/// separately), `Parser::command_buf` will not change until the next call to
-/// `Parser::next`, and slices can be made and returned to the caller.
-#[derive(Copy, Clone, PartialEq, Eq)]
-pub(super) struct Span {
-    pub(super) start: usize,
-    pub(super) end: usize,
-}
-
-/// Spanned version of [`Commitish`].
-#[derive(Clone, Debug)]
-enum CommitishSpan {
-    Mark(Mark),
-    BranchOrOid(Span),
-}
-
-/// Spanned version of [`PersonIdent`].
-struct PersonIdentSpan {
-    name: Span,
-    email: Span,
-    // TODO: Parse dates
-    date: Span,
-}
-
-/// Spanned version of [`DataHeader`].
-#[derive(Clone, Copy, Debug)]
-pub(super) enum DataSpan {
-    Counted { len: u64 },
-    Delimited { delim: Span },
 }
 
 impl<R: BufRead> Parser<R> {
@@ -638,74 +598,10 @@ impl From<StreamError> for io::Error {
     }
 }
 
-impl<'a> Sliceable<'a> for [u8] {
-    #[inline(always)]
-    fn as_slice(&'a self) -> &'a [u8] {
-        self
-    }
-}
-
-impl<'a> Sliceable<'a> for Vec<u8> {
-    #[inline(always)]
-    fn as_slice(&'a self) -> &'a [u8] {
-        self
-    }
-}
-
 impl<'a, R> Sliceable<'a> for Parser<R> {
     #[inline(always)]
     fn as_slice(&'a self) -> &'a [u8] {
         &self.command_buf
-    }
-}
-
-impl Span {
-    #[cfg(debug_assertions)]
-    #[inline(always)]
-    pub(super) fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> &'a [u8] {
-        &bytes.as_slice()[Range::from(*self)]
-    }
-
-    #[cfg(not(debug_assertions))]
-    #[inline(always)]
-    pub(super) fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> &'a [u8] {
-        // SAFETY: It is up to the caller to ensure that spans are in bounds.
-        //
-        // Most spans are for `Parser::command_buf`. Since its length
-        // monotonically increases during a call to `Parser::next`, as long as a
-        // span is used in the same call, only its construction is relevant.
-        // Spans used for other buffers, such as when reading data, have
-        // different considerations. Since spans do not leak into the public
-        // API, the surface area is manageable.
-        unsafe { bytes.as_slice().get_unchecked(Range::from(*self)) }
-    }
-
-    #[inline(always)]
-    fn is_empty(&self) -> bool {
-        !(self.start < self.end)
-    }
-}
-
-impl From<Range<usize>> for Span {
-    #[inline(always)]
-    fn from(range: Range<usize>) -> Self {
-        Span {
-            start: range.start,
-            end: range.end,
-        }
-    }
-}
-
-impl From<Span> for Range<usize> {
-    #[inline(always)]
-    fn from(span: Span) -> Self {
-        span.start..span.end
-    }
-}
-
-impl Debug for Span {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}..{}", self.start, self.end)
     }
 }
 
@@ -732,37 +628,6 @@ impl CommitishSpan {
             Mark::parse(commitish_bytes).map(CommitishSpan::Mark)
         } else {
             Ok(CommitishSpan::BranchOrOid(commitish))
-        }
-    }
-
-    #[inline(always)]
-    fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> Commitish<&'a [u8]> {
-        match *self {
-            CommitishSpan::Mark(mark) => Commitish::Mark(mark),
-            CommitishSpan::BranchOrOid(commitish) => Commitish::BranchOrOid(commitish.slice(bytes)),
-        }
-    }
-}
-
-impl PersonIdentSpan {
-    #[inline(always)]
-    fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> PersonIdent<&'a [u8]> {
-        PersonIdent {
-            name: self.name.slice(bytes),
-            email: self.email.slice(bytes),
-            date: self.date.slice(bytes),
-        }
-    }
-}
-
-impl DataSpan {
-    #[inline(always)]
-    fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> DataHeader<&'a [u8]> {
-        match *self {
-            DataSpan::Counted { len } => DataHeader::Counted { len },
-            DataSpan::Delimited { delim } => DataHeader::Delimited {
-                delim: delim.slice(bytes),
-            },
         }
     }
 }

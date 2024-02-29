@@ -6,9 +6,11 @@
 mod data;
 mod input;
 mod parser;
+mod span;
 
 pub use data::*;
 pub(self) use input::*;
 pub use parser::*;
+pub(self) use span::*;
 
 pub(self) type PResult<T> = Result<T, StreamError>;
