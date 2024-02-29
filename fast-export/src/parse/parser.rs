@@ -19,8 +19,8 @@ use crate::{
         Blob, Branch, Command, Commit, Commitish, Done, Encoding, Mark, OriginalOid, Progress,
     },
     parse::{
-        CommitishSpan, DataReaderError, DataSpan, DataState, DataStream, Input, PResult,
-        PersonIdentSpan, Sliceable, Span,
+        CommitishSpan, DataReaderError, DataSpan, DataState, Input, PResult, PersonIdentSpan,
+        Sliceable, Span,
     },
 };
 
@@ -33,8 +33,8 @@ use crate::{
 /// threads, to be processed in parallel.
 ///
 /// Commands are parsed separately from data streams. To read a data stream,
-/// open a [`DataReader`](super::DataReader) from the returned [`DataStream`](DataStream)
-/// with [`DataStream::open`](DataStream::open).
+/// open a [`DataReader`](super::DataReader) from the returned [`Blob`](Blob)
+/// with [`Blob::open`](Blob::open).
 pub struct Parser<R> {
     /// The input reader being parsed.
     ///
@@ -56,8 +56,8 @@ pub struct Parser<R> {
     cursor: Span,
 
     /// Whether a `DataReader` has been opened for reading. This guards
-    /// `DataStream::open`, to ensure that only one `DataReader` can be opened
-    /// per call to `Parser::next`.
+    /// `Blob::open`, to ensure that only one `DataReader` can be opened per
+    /// call to `Parser::next`.
     pub(super) data_opened: AtomicBool,
     /// The state for reading a data stream.
     ///
@@ -236,10 +236,8 @@ impl<R: BufRead> Parser<R> {
             original_oid: original_oid.map(|oid| OriginalOid {
                 oid: oid.slice(self),
             }),
-            data: DataStream {
-                header: data.slice(self),
-                parser: self,
-            },
+            data_header: data.slice(self),
+            parser: self,
         }))
     }
 

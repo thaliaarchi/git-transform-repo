@@ -13,4 +13,4 @@ pub(self) use input::*;
 pub use parser::*;
 pub(self) use span::*;
 
-pub(self) type PResult<T> = Result<T, StreamError>;
+pub(crate) type PResult<T> = Result<T, StreamError>;

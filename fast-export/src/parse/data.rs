@@ -4,26 +4,13 @@
 // linking exception. For the full terms, see the included COPYING file.
 
 use std::{
-    fmt::{self, Debug, Formatter},
     io::{self, BufRead, Read},
-    ptr,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use thiserror::Error;
 
-use crate::{
-    command::DataHeader,
-    parse::{DataSpan, PResult, Parser},
-};
-
-/// Metadata for the current data stream. It can be opened for reading with
-/// [`DataStream::open`].
-#[derive(Clone)]
-pub struct DataStream<'a, B, R> {
-    pub(super) header: DataHeader<B>,
-    pub(super) parser: &'a Parser<R>,
-}
+use crate::parse::{DataSpan, PResult, Parser};
 
 /// An exclusive handle for reading the current data stream.
 pub struct DataReader<'a, R> {
@@ -32,8 +19,8 @@ pub struct DataReader<'a, R> {
 
 /// The state for reading a data stream. `Parser::data_opened` ensures only one
 /// `DataReader` is ever created for this parser at a time. The header is
-/// stored, instead of using the one in `DataStream`, so that the data stream
-/// can be skipped when the caller does not finish reading it.
+/// stored, instead of using the one in `Blob::data_header`, so that the data
+/// stream can be skipped when the caller does not finish reading it.
 #[derive(Debug)]
 pub(super) struct DataState {
     /// The header information for the data stream.
@@ -66,46 +53,19 @@ pub enum DataReaderError {
     Closed,
 }
 
-impl<'a, B, R: BufRead> DataStream<'a, B, R> {
-    /// Opens this data stream for reading. Only one instance of [`DataReader`]
-    /// can exist at a time.
+impl<'a, R: BufRead> DataReader<'a, R> {
+    /// Opens the current data stream for reading. Only one instance of
+    /// [`DataReader`] can exist at a time.
     #[inline]
-    pub fn open(&self) -> PResult<DataReader<'a, R>> {
+    pub(crate) fn open(parser: &'a Parser<R>) -> PResult<DataReader<'a, R>> {
         // Check that `data_opened` was previously false and set it to true.
-        if !self.parser.data_opened.swap(true, Ordering::Acquire) {
-            Ok(DataReader {
-                parser: self.parser,
-            })
+        if !parser.data_opened.swap(true, Ordering::Acquire) {
+            Ok(DataReader { parser })
         } else {
             Err(DataReaderError::AlreadyOpened.into())
         }
     }
 
-    /// Gets the header for this data stream.
-    #[inline(always)]
-    pub fn header(&self) -> &DataHeader<B> {
-        &self.header
-    }
-}
-
-impl<B: Debug, R> Debug for DataStream<'_, B, R> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DataStream")
-            .field("header", &self.header)
-            .finish()
-    }
-}
-
-impl<B: PartialEq, R> PartialEq for DataStream<'_, B, R> {
-    #[inline(always)]
-    fn eq(&self, other: &Self) -> bool {
-        self.header == other.header && ptr::eq(self.parser as _, other.parser as _)
-    }
-}
-
-impl<B: Eq, R> Eq for DataStream<'_, B, R> {}
-
-impl<R: BufRead> DataReader<'_, R> {
     /// Reads from the data stream into the given buffer. Identical to
     /// [`DataReader::read`], but returns [`ParseError`](super::ParseError).
     #[inline]
@@ -269,10 +229,10 @@ mod tests {
                 oid: &b"3141592653589793238462643383279502884197"[..],
             }),
         );
-        assert_eq!(blob.data.header, DataHeader::Counted { len: 14 });
+        assert_eq!(blob.data_header, DataHeader::Counted { len: 14 });
 
         if read_all {
-            let mut r = blob.data.open().unwrap();
+            let mut r = blob.open().unwrap();
             let mut buf = Vec::new();
             if let Err(err) = r.read_to_end(&mut buf) {
                 panic!("read to end: {err}\nbuffer: {:?}", buf.as_bstr());
@@ -303,12 +263,12 @@ mod tests {
             }),
         );
         assert_eq!(
-            blob.data.header,
+            blob.data_header,
             DataHeader::Delimited { delim: &b"EOF"[..] },
         );
 
         if read_all {
-            let mut r = blob.data.open().unwrap();
+            let mut r = blob.open().unwrap();
             let mut buf = Vec::new();
             if let Err(err) = r.read_to_end(&mut buf) {
                 panic!("read to end: {err}\nbuffer: {:?}", buf.as_bstr());

@@ -3,11 +3,16 @@
 // This file is part of fast-export-rust, distributed under the GPL 2.0 with a
 // linking exception. For the full terms, see the included COPYING file.
 
-use std::num::NonZeroU64;
+use std::{
+    fmt::{self, Debug, Formatter},
+    io::BufRead,
+    num::NonZeroU64,
+    ptr,
+};
 
 use thiserror::Error;
 
-use crate::parse::DataStream;
+use crate::parse::{DataReader, PResult, Parser};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command<'a, B, R> {
@@ -26,12 +31,44 @@ pub enum Command<'a, B, R> {
     Option(OptionCommand<B>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Blob<'a, B, R> {
     pub mark: Option<Mark>,
     pub original_oid: Option<OriginalOid<B>>,
-    pub data: DataStream<'a, B, R>,
+    pub data_header: DataHeader<B>,
+    pub(crate) parser: &'a Parser<R>,
 }
+
+impl<'a, B, R: BufRead> Blob<'a, B, R> {
+    /// Opens this blob for reading. Only one instance of [`DataReader`] can
+    /// exist at a time.
+    #[inline(always)]
+    pub fn open(&self) -> PResult<DataReader<'a, R>> {
+        DataReader::open(self.parser)
+    }
+}
+
+impl<B: Debug, R> Debug for Blob<'_, B, R> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Blob")
+            .field("mark", &self.mark)
+            .field("original_oid", &self.original_oid)
+            .field("data_header", &self.data_header)
+            .finish()
+    }
+}
+
+impl<B: PartialEq, R> PartialEq for Blob<'_, B, R> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.mark == other.mark
+            && self.original_oid == other.original_oid
+            && self.data_header == other.data_header
+            && ptr::eq(self.parser as _, other.parser as _)
+    }
+}
+
+impl<B: Eq, R> Eq for Blob<'_, B, R> {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit<'a, B> {
