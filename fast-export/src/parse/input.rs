@@ -118,7 +118,6 @@ impl<R: BufRead> Input<R> {
 
     /// Reads from the current data stream into `buf`. The delimiter span must
     /// be in `command_buf`.
-    #[inline(always)]
     pub(super) fn read_data(
         &mut self,
         buf: &mut [u8],
@@ -174,7 +173,6 @@ impl<R: BufRead> Input<R> {
     }
 
     /// Reads to the end of the data stream without consuming it.
-    #[inline(always)]
     pub(super) fn skip_data(&mut self, s: &mut DataState, command_buf: &[u8]) -> PResult<u64> {
         if s.closed {
             return Err(DataReaderError::Closed.into());

@@ -66,41 +66,6 @@ pub enum DataReaderError {
     Closed,
 }
 
-impl<R: BufRead> Parser<R> {
-    /// Reads from the current data stream into the given buffer. Mutation
-    /// exclusivity is not checked.
-    ///
-    /// # Safety
-    ///
-    /// The caller must guarantee exclusive mutable access to all of the
-    /// `UnsafeCell` fields in `Parser` (`Parser::input` and
-    /// `Parser::data_state`). See the invariants in `Parser::input`.
-    unsafe fn read_data_cell(&self, buf: &mut [u8]) -> PResult<usize> {
-        // SAFETY: Guaranteed by caller.
-        let (input, s) = unsafe { (&mut *self.input.get(), &mut *self.data_state.get()) };
-        input.read_data(buf, s, &self.command_buf)
-    }
-
-    /// Reads to the end of the data stream without consuming it.
-    #[inline(always)]
-    pub(super) fn skip_data(&mut self) -> PResult<u64> {
-        // SAFETY: We have exclusive access from `&mut`.
-        unsafe { self.skip_data_cell() }
-    }
-
-    /// Reads to the end of the data stream without consuming it. Mutation
-    /// exclusivity is not checked.
-    ///
-    /// # Safety
-    ///
-    /// Same as `Parser::read_data`.
-    unsafe fn skip_data_cell(&self) -> PResult<u64> {
-        // SAFETY: Guaranteed by caller.
-        let (input, s) = unsafe { (&mut *self.input.get(), &mut *self.data_state.get()) };
-        input.skip_data(s, &self.command_buf)
-    }
-}
-
 impl<'a, B, R: BufRead> DataStream<'a, B, R> {
     /// Opens this data stream for reading. Only one instance of [`DataReader`]
     /// can exist at a time.
@@ -149,7 +114,13 @@ impl<R: BufRead> DataReader<'_, R> {
         // fields, because we are in the single instance of `DataReader`, and
         // its construction was guarded by `DataState::reading_data`. See the
         // invariants in `Parser::input`.
-        unsafe { self.parser.read_data_cell(buf) }
+        let (input, data_state) = unsafe {
+            (
+                &mut *self.parser.input.get(),
+                &mut *self.parser.data_state.get(),
+            )
+        };
+        input.read_data(buf, data_state, &self.parser.command_buf)
     }
 
     /// Skips reading the rest of the data stream and returns the number of
@@ -165,7 +136,13 @@ impl<R: BufRead> DataReader<'_, R> {
     #[inline]
     pub fn skip_rest(&mut self) -> PResult<u64> {
         // SAFETY: See `DataReader::read_next`.
-        unsafe { self.parser.skip_data_cell() }
+        let (input, data_state) = unsafe {
+            (
+                &mut *self.parser.input.get(),
+                &mut *self.parser.data_state.get(),
+            )
+        };
+        input.skip_data(data_state, &self.parser.command_buf)
     }
 
     /// Closes the data stream and returns an error when it was not read to

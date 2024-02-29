@@ -220,7 +220,9 @@ impl<R: BufRead> Parser<R> {
     pub fn next(&mut self) -> PResult<Command<'_, &[u8], R>> {
         // Finish reading the previous data stream, if the user didn't.
         if !self.data_state.get_mut().finished() {
-            self.skip_data()?;
+            self.input
+                .get_mut()
+                .skip_data(self.data_state.get_mut(), &self.command_buf)?;
         }
 
         self.commitish_scratch.clear();
