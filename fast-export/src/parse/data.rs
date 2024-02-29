@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::{
     command::DataHeader,
-    parse::{DataSpan, PResult, ParseError, Parser},
+    parse::{DataSpan, PResult, Parser},
 };
 
 /// Metadata for the current data stream. It can be opened for reading with
@@ -37,17 +37,17 @@ pub struct DataReader<'a, R> {
 #[derive(Debug)]
 pub(super) struct DataState {
     /// The header information for the data stream.
-    header: DataSpan,
+    pub(super) header: DataSpan,
     /// Whether the data stream has been read to completion.
-    finished: bool,
+    pub(super) finished: bool,
     /// Whether the data reader has been closed.
-    closed: bool,
+    pub(super) closed: bool,
     /// The number of bytes read from the data stream.
-    len_read: u64,
+    pub(super) len_read: u64,
     /// A buffer for reading lines in delimited data.
-    line_buf: Vec<u8>,
+    pub(super) line_buf: Vec<u8>,
     /// The offset into `line_buf`, at which reading begins.
-    line_offset: usize,
+    pub(super) line_offset: usize,
 }
 
 /// An error from opening a [`DataReader`].
@@ -67,38 +67,6 @@ pub enum DataReaderError {
 }
 
 impl<R: BufRead> Parser<R> {
-    /// Reads all of the described data stream into `self.command_buf`.
-    pub(super) fn read_data_to_end(&mut self, header: DataSpan) -> PResult<()> {
-        let input = self.input.get_mut();
-        match header {
-            DataSpan::Counted { len } => {
-                if usize::try_from(len).is_err() {
-                    return Err(io::ErrorKind::OutOfMemory.into());
-                }
-                // When `Read::read_buf` is stabilized, it might be worth using
-                // it directly.
-                let start = self.command_buf.len();
-                let n = (&mut input.r)
-                    .take(len)
-                    .read_to_end(&mut self.command_buf)?;
-                input.line += count_lf(&self.command_buf[start..]);
-                if (n as u64) < len {
-                    return Err(ParseError::DataUnexpectedEof.into());
-                }
-                debug_assert!(n as u64 == len, "misbehaving Take implementation");
-                Ok(())
-            }
-            DataSpan::Delimited { delim } => loop {
-                let len = self.command_buf.len();
-                let line = input.read_line(&mut self.command_buf)?;
-                if line.slice(&self.command_buf) == delim.slice(&self.command_buf) {
-                    self.command_buf.truncate(len);
-                    return Ok(());
-                }
-            },
-        }
-    }
-
     /// Reads from the current data stream into the given buffer. Mutation
     /// exclusivity is not checked.
     ///
@@ -110,52 +78,7 @@ impl<R: BufRead> Parser<R> {
     unsafe fn read_data_cell(&self, buf: &mut [u8]) -> PResult<usize> {
         // SAFETY: Guaranteed by caller.
         let (input, s) = unsafe { (&mut *self.input.get(), &mut *self.data_state.get()) };
-        if s.closed {
-            return Err(DataReaderError::Closed.into());
-        }
-        if buf.is_empty() || s.finished {
-            return Ok(0);
-        }
-        match s.header {
-            DataSpan::Counted { len } => {
-                if input.eof {
-                    return Err(ParseError::DataUnexpectedEof.into());
-                }
-                let end = usize::try_from(len - s.len_read)
-                    .unwrap_or(usize::MAX)
-                    .min(buf.len());
-                let n = input.r.read(&mut buf[..end])?;
-                debug_assert!(n <= end, "misbehaving Read implementation");
-                s.len_read += n as u64;
-                if s.len_read >= len {
-                    debug_assert!(s.len_read == len, "read too many bytes");
-                    s.finished = true;
-                }
-                input.line += count_lf(buf);
-                Ok(n)
-            }
-            DataSpan::Delimited { delim } => {
-                let delim = delim.slice(&self.command_buf);
-                if s.line_offset >= s.line_buf.len() {
-                    if input.eof {
-                        return Err(ParseError::UnterminatedData.into());
-                    }
-                    s.line_buf.clear();
-                    s.line_offset = 0;
-                    let line = input.read_line(&mut s.line_buf)?;
-                    if line.slice(&s.line_buf) == delim {
-                        s.finished = true;
-                        return Ok(0);
-                    }
-                }
-                let off = s.line_offset;
-                let n = (s.line_buf.len() - off).min(buf.len());
-                buf[..n].copy_from_slice(&s.line_buf[off..off + n]);
-                s.line_offset += n;
-                s.len_read += n as u64;
-                Ok(n)
-            }
-        }
+        input.read_data(buf, s, &self.command_buf)
     }
 
     /// Reads to the end of the data stream without consuming it.
@@ -174,46 +97,7 @@ impl<R: BufRead> Parser<R> {
     unsafe fn skip_data_cell(&self) -> PResult<u64> {
         // SAFETY: Guaranteed by caller.
         let (input, s) = unsafe { (&mut *self.input.get(), &mut *self.data_state.get()) };
-        if s.closed {
-            return Err(DataReaderError::Closed.into());
-        }
-        if s.finished {
-            return Ok(0);
-        }
-        let start_len = s.len_read;
-        match s.header {
-            DataSpan::Counted { len } => {
-                while s.len_read < len {
-                    let buf = input.r.fill_buf()?;
-                    if buf.is_empty() {
-                        input.eof = true;
-                        return Err(ParseError::DataUnexpectedEof.into());
-                    }
-                    let n = usize::try_from(len - s.len_read)
-                        .unwrap_or(usize::MAX)
-                        .min(buf.len());
-                    input.line += count_lf(buf);
-                    input.r.consume(n);
-                    s.len_read += n as u64;
-                }
-            }
-            DataSpan::Delimited { delim } => {
-                let delim = delim.slice(&self.command_buf);
-                loop {
-                    if input.eof {
-                        return Err(ParseError::UnterminatedData.into());
-                    }
-                    s.line_buf.clear();
-                    let line = input.read_line(&mut s.line_buf)?;
-                    if line.slice(&s.line_buf) == delim {
-                        break;
-                    }
-                    s.len_read += s.line_buf.len() as u64;
-                }
-            }
-        }
-        s.finished = true;
-        Ok(s.len_read - start_len)
+        input.skip_data(s, &self.command_buf)
     }
 }
 
@@ -354,10 +238,6 @@ impl DataState {
     }
 }
 
-fn count_lf(buf: &[u8]) -> u64 {
-    buf.iter().filter(|&&b| b == b'\n').count() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::Read;
@@ -424,7 +304,6 @@ mod tests {
         }
 
         assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
-        assert!(parser.input.get_mut().r.is_empty());
     }
 
     fn parse_delimited_blob(read_all: bool, optional_lf: bool) {
@@ -461,6 +340,5 @@ mod tests {
         }
 
         assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
-        assert!(parser.input.get_mut().r.is_empty());
     }
 }

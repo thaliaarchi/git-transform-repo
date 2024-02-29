@@ -227,7 +227,7 @@ impl<R: BufRead> Parser<R> {
         self.command_buf.clear();
         self.bump_command()?;
 
-        if self.input.get_mut().eof {
+        if self.input.get_mut().eof() {
             Ok(Command::Done(Done::Eof))
         } else if self.eat_if_equals(b"blob") {
             self.parse_blob()
@@ -536,7 +536,9 @@ impl<R: BufRead> Parser<R> {
     fn parse_data_small(&mut self) -> PResult<Span> {
         let header = self.parse_data_header()?;
         let start = self.command_buf.len();
-        self.read_data_to_end(header)?;
+        self.input
+            .get_mut()
+            .read_data_to_end(header, &mut self.command_buf)?;
         Ok(Span::from(start..self.command_buf.len()))
     }
 
