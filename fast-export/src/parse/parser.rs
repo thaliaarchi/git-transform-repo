@@ -21,7 +21,7 @@ use crate::{
         Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, Mark, OriginalOid,
         PersonIdent, Progress,
     },
-    parse::{DataReaderError, DataState, DataStream, PResult},
+    parse::{DataReaderError, DataState, DataStream, Input, PResult},
 };
 
 /// A zero-copy pull parser for fast-export streams.
@@ -70,9 +70,6 @@ pub struct Parser<R> {
     commitish_scratch: Vec<Commitish<&'static [u8]>>,
     /// The spans that are converted into `self.commitish_scratch`.
     commitish_span_scratch: Vec<CommitishSpan>,
-
-    /// Whether the previous command ended with an optional LF.
-    skip_optional_lf: bool,
 }
 
 // SAFETY: All `UnsafeCell` fields are guaranteed only be modified by a single
@@ -80,16 +77,6 @@ pub struct Parser<R> {
 // by `Parser::data_opened` to ensure it can only happen by one thread. See the
 // invariants of `Parser::input`.
 unsafe impl<R> Sync for Parser<R> {}
-
-/// Input for a fast-export stream.
-pub(super) struct Input<R> {
-    /// Reader for the fast-export stream.
-    pub(super) r: R,
-    /// Whether the reader has reached EOF.
-    pub(super) eof: bool,
-    /// The current line number.
-    pub(super) line: u64,
-}
 
 /// An error from parsing a fast-export stream, including IO errors.
 #[derive(Debug, Error)]
@@ -183,8 +170,8 @@ pub(super) trait Sliceable<'a> {
 /// `Parser::next`, and slices can be made and returned to the caller.
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub(super) struct Span {
-    start: usize,
-    end: usize,
+    pub(super) start: usize,
+    pub(super) end: usize,
 }
 
 /// Spanned version of [`Commitish`].
@@ -214,18 +201,13 @@ impl<R: BufRead> Parser<R> {
     #[inline]
     pub fn new(input: R) -> Self {
         Parser {
-            input: UnsafeCell::new(Input {
-                r: input,
-                eof: false,
-                line: 0,
-            }),
+            input: UnsafeCell::new(Input::new(input)),
             command_buf: Vec::new(),
             cursor: Span::from(0..0),
             data_opened: AtomicBool::new(false),
             data_state: UnsafeCell::new(DataState::new()),
             commitish_scratch: Vec::new(),
             commitish_span_scratch: Vec::new(),
-            skip_optional_lf: false,
         }
     }
 
@@ -373,7 +355,7 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_checkpoint` in fast-import.c.
     fn parse_checkpoint(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        self.skip_optional_lf = true;
+        self.skip_optional_lf();
         Ok(Command::Checkpoint)
     }
 
@@ -384,7 +366,7 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_progress` in fast-import.c.
     fn parse_progress(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        self.skip_optional_lf = true;
+        self.skip_optional_lf();
         Ok(Command::Progress(Progress {
             message: self.line_remaining(),
         }))
@@ -542,7 +524,7 @@ impl<R: BufRead> Parser<R> {
             DataSpan::Counted { len }
         };
         self.data_state.get_mut().set(header, &mut self.data_opened);
-        self.skip_optional_lf = true;
+        self.skip_optional_lf();
         Ok(header)
     }
 
@@ -571,36 +553,13 @@ impl<R: BufRead> Parser<R> {
         Ok(())
     }
 
-    /// Reads a line from input into `self.line_buf`, stripping the LF
-    /// delimiter, and skipping any comment lines that start with `#`. Lines may
-    /// contain any bytes (including NUL), except for LF.
-    ///
-    // Corresponds to `read_next_command` in fast-import.c.
+    /// Reads a line from input into `self.line_buf`, stripping the LF delimiter
+    /// and skipping any comment lines that start with `#`. Lines may contain
+    /// any bytes (including NUL), except for LF.
     fn bump_command(&mut self) -> io::Result<()> {
-        let input = self.input.get_mut();
-        loop {
-            if input.eof {
-                self.cursor.start = self.cursor.end;
-                break;
-            }
-            self.cursor = input.read_line(&mut self.command_buf)?;
-            let line = self.cursor.slice(&self.command_buf);
-            if self.skip_optional_lf {
-                self.skip_optional_lf = false;
-                if line.is_empty() {
-                    // If we are at the start of a command, but the LF is from
-                    // the previous, clear it.
-                    if self.cursor.start == 0 {
-                        self.command_buf.clear();
-                    }
-                    continue;
-                }
-            }
-            if !line.starts_with(b"#") {
-                break;
-            }
-        }
-        Ok(())
+        self.input
+            .get_mut()
+            .read_command(&mut self.command_buf, &mut self.cursor)
     }
 
     /// Returns the remainder of the line at the cursor.
@@ -634,6 +593,13 @@ impl<R: BufRead> Parser<R> {
             false
         }
     }
+
+    /// Skips a trailing LF, if one exists, before reading the following
+    /// command.
+    #[inline(always)]
+    fn skip_optional_lf(&mut self) {
+        self.input.get_mut().skip_optional_lf();
+    }
 }
 
 impl<R: Debug> Debug for Parser<R> {
@@ -646,30 +612,7 @@ impl<R: Debug> Debug for Parser<R> {
             .field("data_state", &self.data_state)
             .field("commitish_scratch", &self.commitish_scratch)
             .field("commitish_span_scratch", &self.commitish_span_scratch)
-            .field("skip_optional_lf", &self.skip_optional_lf)
             .finish()
-    }
-}
-
-impl<R: BufRead> Input<R> {
-    /// Reads a line from `self.r` into `buf`, stripping the LF delimiter. Lines
-    /// may contain any bytes (including NUL), except for LF.
-    ///
-    // Corresponds to `strbuf_getline_lf` in strbuf.c.
-    #[inline(always)]
-    pub(super) fn read_line(&mut self, buf: &mut Vec<u8>) -> io::Result<Span> {
-        debug_assert!(!self.eof, "already at EOF");
-        let start = buf.len();
-        self.r.read_until(b'\n', buf)?;
-        let mut end = buf.len();
-        if let [.., b'\n'] = &buf[start..] {
-            end -= 1;
-        } else {
-            // EOF is reached in `read_until` iff the delimiter is not included.
-            self.eof = true;
-        }
-        self.line += 1;
-        Ok(Span::from(start..end))
     }
 }
 

@@ -4,9 +4,11 @@
 // linking exception. For the full terms, see the included COPYING file.
 
 mod data;
+mod input;
 mod parser;
 
 pub use data::*;
+pub(self) use input::*;
 pub use parser::*;
 
-pub(super) type PResult<T> = Result<T, StreamError>;
+pub(self) type PResult<T> = Result<T, StreamError>;
