@@ -23,3 +23,6 @@ fast-import docs:
 
 > Currently they must be encoded in UTF-8, as fast-import does not permit other
 > encodings to be specified.
+
+`feature` is missing `alias`, `rewrite-submodules-to`, and
+`rewrite-submodules-from`.
