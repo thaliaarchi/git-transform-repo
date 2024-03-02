@@ -8,7 +8,7 @@ use std::{
     ops::Range,
 };
 
-use crate::command::{Commitish, DataHeader, Mark, PersonIdent};
+use crate::command::MapBytes;
 
 /// Converts the type to a byte slice for slicing with a `Span`.
 pub(super) trait Sliceable<'a> {
@@ -28,26 +28,13 @@ pub(super) struct Span {
     pub(super) end: usize,
 }
 
-/// Spanned version of [`Commitish`].
-#[derive(Clone, Debug)]
-pub(super) enum CommitishSpan {
-    Mark(Mark),
-    BranchOrOid(Span),
-}
-
-/// Spanned version of [`PersonIdent`].
-pub(super) struct PersonIdentSpan {
-    pub(super) name: Span,
-    pub(super) email: Span,
-    // TODO: Parse dates
-    pub(super) date: Span,
-}
-
-/// Spanned version of [`DataHeader`].
-#[derive(Clone, Copy, Debug)]
-pub(super) enum DataSpan {
-    Counted { len: u64 },
-    Delimited { delim: Span },
+#[inline(always)]
+pub(super) fn slice<'a, T, S>(command: T, bytes: &'a S) -> T::Output
+where
+    T: MapBytes<Span, &'a [u8]>,
+    S: Sliceable<'a> + ?Sized,
+{
+    command.map_bytes(&mut |field| field.slice(bytes))
 }
 
 impl<'a> Sliceable<'a> for [u8] {
@@ -111,44 +98,5 @@ impl From<Span> for Range<usize> {
 impl Debug for Span {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}..{}", self.start, self.end)
-    }
-}
-
-impl CommitishSpan {
-    #[inline(always)]
-    pub(super) fn slice<'a, S: Sliceable<'a> + ?Sized>(&self, bytes: &'a S) -> Commitish<&'a [u8]> {
-        match *self {
-            CommitishSpan::Mark(mark) => Commitish::Mark(mark),
-            CommitishSpan::BranchOrOid(commitish) => Commitish::BranchOrOid(commitish.slice(bytes)),
-        }
-    }
-}
-
-impl PersonIdentSpan {
-    #[inline(always)]
-    pub(super) fn slice<'a, S: Sliceable<'a> + ?Sized>(
-        &self,
-        bytes: &'a S,
-    ) -> PersonIdent<&'a [u8]> {
-        PersonIdent {
-            name: self.name.slice(bytes),
-            email: self.email.slice(bytes),
-            date: self.date.slice(bytes),
-        }
-    }
-}
-
-impl DataSpan {
-    #[inline(always)]
-    pub(super) fn slice<'a, S: Sliceable<'a> + ?Sized>(
-        &self,
-        bytes: &'a S,
-    ) -> DataHeader<&'a [u8]> {
-        match *self {
-            DataSpan::Counted { len } => DataHeader::Counted { len },
-            DataSpan::Delimited { delim } => DataHeader::Delimited {
-                delim: delim.slice(bytes),
-            },
-        }
     }
 }

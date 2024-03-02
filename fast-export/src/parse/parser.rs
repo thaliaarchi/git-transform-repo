@@ -15,11 +15,11 @@ use bstr::ByteSlice;
 use thiserror::Error;
 
 use crate::{
-    command::{Blob, Branch, Command, Commit, Done, Encoding, Mark, OriginalOid, Progress},
-    parse::{
-        CommitishSpan, DataReaderError, DataSpan, DataState, Input, PResult, PersonIdentSpan,
-        Sliceable, Span,
+    command::{
+        Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, Mark, OriginalOid,
+        PersonIdent, Progress,
     },
+    parse::{slice, DataReaderError, DataState, Input, PResult, Sliceable, Span},
 };
 
 /// A zero-copy pull parser for fast-export streams.
@@ -217,23 +217,20 @@ impl<R: BufRead> Parser<R> {
         self.bump_command()?;
         let mark = self.parse_mark()?;
         let original_oid = self.parse_original_oid()?;
-        let data = self.parse_data_header()?;
+        let data_header = self.parse_data_header()?;
 
-        Ok(Command::Blob(Blob {
+        let blob = Blob {
             mark,
-            original_oid: original_oid.map(|oid| OriginalOid {
-                oid: oid.slice(self),
-            }),
-            data_header: data.slice(self),
+            original_oid,
+            data_header,
             parser: self,
-        }))
+        };
+        Ok(Command::Blob(slice(blob, self)))
     }
 
     // Corresponds to `parse_new_commit` in fast-import.c.
     fn parse_commit(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        let branch = self.cursor;
-        self.validate_branch(branch)?;
-        self.bump_command()?;
+        let branch = self.parse_branch()?;
         let mark = self.parse_mark()?;
         let original_oid = self.parse_original_oid()?;
         let author = self.parse_person_ident(b"author ")?;
@@ -246,27 +243,19 @@ impl<R: BufRead> Parser<R> {
         let from = self.parse_from()?;
         let merge = self.parse_merge()?;
 
-        Ok(Command::Commit(Commit {
-            branch: Branch {
-                branch: branch.slice(self),
-            },
+        let commit = Commit {
+            branch,
             mark,
-            original_oid: original_oid.map(|oid| OriginalOid {
-                oid: oid.slice(self),
-            }),
-            author: author.map(|author| author.slice(self)),
-            committer: committer.slice(self),
-            encoding: encoding.map(|encoding| Encoding {
-                encoding: encoding.slice(self),
-            }),
-            message: message.slice(self),
-            from: from.map(|from| from.slice(self)),
-            merge: merge
-                .into_iter()
-                .map(|commitish| commitish.slice(self))
-                .collect(),
+            original_oid,
+            author,
+            committer,
+            encoding,
+            message,
+            from,
+            merge,
             // TODO
-        }))
+        };
+        Ok(Command::Commit(slice(commit, self)))
     }
 
     // Corresponds to `parse_new_tag` in fast-import.c.
@@ -323,6 +312,20 @@ impl<R: BufRead> Parser<R> {
         todo!()
     }
 
+    /// Returns an error when the branch name is invalid.
+    ///
+    // Corresponds to `lookup_branch` and `new_branch` in fast-import.c.
+    fn parse_branch(&mut self) -> PResult<Branch<Span>> {
+        let branch = self.cursor;
+        if branch.slice(self).contains(&b'\0') {
+            return Err(ParseError::BranchContainsNul.into());
+        }
+        // The git-specific validation of `new_branch` is handled outside by
+        // `Branch::validate_git`, so the user can use this for any VCS.
+        self.bump_command()?;
+        Ok(Branch { branch })
+    }
+
     /// # Differences from fast-import
     ///
     /// `mark :0` is rejected here, but not by fast-import.
@@ -342,40 +345,40 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_original_identifier` in fast-import.c.
-    fn parse_original_oid(&mut self) -> PResult<Option<Span>> {
+    fn parse_original_oid(&mut self) -> PResult<Option<OriginalOid<Span>>> {
         if self.eat_prefix(b"original-oid ") {
             let original_oid = self.cursor;
             self.bump_command()?;
-            Ok(Some(original_oid))
+            Ok(Some(OriginalOid { oid: original_oid }))
         } else {
             Ok(None)
         }
     }
 
     // Corresponds to `parse_from` in fast-import.c.
-    fn parse_from(&mut self) -> PResult<Option<CommitishSpan>> {
+    fn parse_from(&mut self) -> PResult<Option<Commitish<Span>>> {
         if self.eat_prefix(b"from ") {
             let commitish = self.cursor;
             self.bump_command()?;
-            CommitishSpan::parse(commitish, self).map(Some)
+            Commitish::parse(commitish, self).map(Some)
         } else {
             Ok(None)
         }
     }
 
     // Corresponds to `parse_merge` in fast-import.c.
-    fn parse_merge(&mut self) -> PResult<Vec<CommitishSpan>> {
+    fn parse_merge(&mut self) -> PResult<Vec<Commitish<Span>>> {
         let mut merge = Vec::new();
         while self.eat_prefix(b"merge ") {
             let commitish = self.cursor;
             self.bump_command()?;
-            merge.push(CommitishSpan::parse(commitish, self)?);
+            merge.push(Commitish::parse(commitish, self)?);
         }
         Ok(merge)
     }
 
     // Corresponds to `parse_ident` in fast-import.c.
-    fn parse_person_ident(&mut self, prefix: &[u8]) -> PResult<Option<PersonIdentSpan>> {
+    fn parse_person_ident(&mut self, prefix: &[u8]) -> PResult<Option<PersonIdent<Span>>> {
         if !self.eat_prefix(prefix) {
             return Ok(None);
         }
@@ -418,7 +421,7 @@ impl<R: BufRead> Parser<R> {
 
         let lt = cursor.start + lt;
         let gt = cursor.start + gt;
-        Ok(Some(PersonIdentSpan {
+        Ok(Some(PersonIdent {
             name: Span::from(cursor.start..(lt - 2).max(cursor.start)),
             email: Span::from(lt + 1..gt - 1),
             date: Span::from((gt + 2).min(cursor.end)..cursor.end),
@@ -426,11 +429,11 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to part of `parse_new_commit` in fast-import.c.
-    fn parse_encoding(&mut self) -> PResult<Option<Span>> {
+    fn parse_encoding(&mut self) -> PResult<Option<Encoding<Span>>> {
         if self.eat_prefix(b"encoding ") {
             let encoding = self.cursor;
             self.bump_command()?;
-            Ok(Some(encoding))
+            Ok(Some(Encoding { encoding }))
         } else {
             Ok(None)
         }
@@ -441,7 +444,7 @@ impl<R: BufRead> Parser<R> {
     /// `--big-file-threshold` (default 512MiB).
     ///
     // Corresponds to `parse_and_store_blob` in fast-import.c.
-    fn parse_data_header(&mut self) -> PResult<DataSpan> {
+    fn parse_data_header(&mut self) -> PResult<DataHeader<Span>> {
         if !self.eat_prefix(b"data ") {
             return Err(ParseError::ExpectedDataCommand.into());
         }
@@ -452,12 +455,14 @@ impl<R: BufRead> Parser<R> {
             } else if delim.slice(self).contains(&b'\0') {
                 return Err(ParseError::DataDelimContainsNul.into());
             }
-            DataSpan::Delimited { delim }
+            DataHeader::Delimited { delim }
         } else {
             let len = parse_u64(self.line_remaining()).ok_or(ParseError::InvalidDataLength)?;
-            DataSpan::Counted { len }
+            DataHeader::Counted { len }
         };
-        self.data_state.get_mut().set(header, &mut self.data_opened);
+        self.data_state
+            .get_mut()
+            .set(header.clone(), &mut self.data_opened);
         self.skip_optional_lf();
         Ok(header)
     }
@@ -474,19 +479,6 @@ impl<R: BufRead> Parser<R> {
             .get_mut()
             .read_data_to_end(header, &mut self.command_buf)?;
         Ok(Span::from(start..self.command_buf.len()))
-    }
-
-    /// Returns an error when the branch name is invalid.
-    ///
-    // Corresponds to `lookup_branch` and `new_branch` in fast-import.c.
-    #[inline]
-    fn validate_branch(&self, branch: Span) -> PResult<()> {
-        if branch.slice(self).contains(&b'\0') {
-            return Err(ParseError::BranchContainsNul.into());
-        }
-        // The git-specific validation of `new_branch` is handled outside by
-        // `Branch::validate_git`, so the user can use this for any VCS.
-        Ok(())
     }
 
     /// Reads a line from input into `self.line_buf`, stripping the LF delimiter
@@ -588,16 +580,16 @@ impl Mark {
     }
 }
 
-impl CommitishSpan {
+impl Commitish<Span> {
     // Corresponds to `parse_objectish` and `parse_merge` in fast-import.c.
     fn parse<R: BufRead>(commitish: Span, parser: &Parser<R>) -> PResult<Self> {
         // TODO: How much of `parse_objectish` should be here or in the
         // front-end?
         let commitish_bytes = commitish.slice(parser);
         if commitish_bytes.starts_with(b":") {
-            Mark::parse(commitish_bytes).map(CommitishSpan::Mark)
+            Mark::parse(commitish_bytes).map(Commitish::Mark)
         } else {
-            Ok(CommitishSpan::BranchOrOid(commitish))
+            Ok(Commitish::BranchOrOid(commitish))
         }
     }
 }

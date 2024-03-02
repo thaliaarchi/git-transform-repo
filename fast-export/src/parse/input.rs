@@ -5,7 +5,10 @@
 
 use std::io::{self, BufRead, Read};
 
-use crate::parse::{DataReaderError, DataSpan, DataState, PResult, ParseError, Span};
+use crate::{
+    command::DataHeader,
+    parse::{DataReaderError, DataState, PResult, ParseError, Span},
+};
 
 /// Input for a fast-export stream.
 pub(super) struct Input<R> {
@@ -86,11 +89,11 @@ impl<R: BufRead> Input<R> {
     /// span in `header` must be in `command_buf`.
     pub(super) fn read_data_to_end(
         &mut self,
-        header: DataSpan,
+        header: DataHeader<Span>,
         command_buf: &mut Vec<u8>,
     ) -> PResult<()> {
         match header {
-            DataSpan::Counted { len } => {
+            DataHeader::Counted { len } => {
                 if usize::try_from(len).is_err() {
                     return Err(io::ErrorKind::OutOfMemory.into());
                 }
@@ -104,7 +107,7 @@ impl<R: BufRead> Input<R> {
                 }
                 debug_assert!(n as u64 == len, "misbehaving Take implementation");
             }
-            DataSpan::Delimited { delim } => loop {
+            DataHeader::Delimited { delim } => loop {
                 let len = command_buf.len();
                 let line = self.read_line(command_buf)?;
                 if line.slice(command_buf) == delim.slice(command_buf) {
@@ -131,7 +134,7 @@ impl<R: BufRead> Input<R> {
             return Ok(0);
         }
         match s.header {
-            DataSpan::Counted { len } => {
+            DataHeader::Counted { len } => {
                 if self.eof {
                     return Err(ParseError::DataUnexpectedEof.into());
                 }
@@ -148,7 +151,7 @@ impl<R: BufRead> Input<R> {
                 self.line += count_lf(buf);
                 Ok(n)
             }
-            DataSpan::Delimited { delim } => {
+            DataHeader::Delimited { delim } => {
                 let delim = delim.slice(command_buf);
                 if s.line_offset >= s.line_buf.len() {
                     if self.eof {
@@ -182,7 +185,7 @@ impl<R: BufRead> Input<R> {
         }
         let start_len = s.len_read;
         match s.header {
-            DataSpan::Counted { len } => {
+            DataHeader::Counted { len } => {
                 while s.len_read < len {
                     let buf = self.r.fill_buf()?;
                     if buf.is_empty() {
@@ -197,7 +200,7 @@ impl<R: BufRead> Input<R> {
                     s.len_read += n as u64;
                 }
             }
-            DataSpan::Delimited { delim } => {
+            DataHeader::Delimited { delim } => {
                 let delim = delim.slice(command_buf);
                 loop {
                     if self.eof {

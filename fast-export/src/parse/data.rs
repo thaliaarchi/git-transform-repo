@@ -10,7 +10,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::parse::{DataSpan, PResult, Parser};
+use crate::{
+    command::DataHeader,
+    parse::{PResult, Parser, Span},
+};
 
 /// An exclusive handle for reading the current data stream.
 pub struct DataReader<'a, R> {
@@ -24,7 +27,7 @@ pub struct DataReader<'a, R> {
 #[derive(Debug)]
 pub(super) struct DataState {
     /// The header information for the data stream.
-    pub(super) header: DataSpan,
+    pub(super) header: DataHeader<Span>,
     /// Whether the data stream has been read to completion.
     pub(super) finished: bool,
     /// Whether the data reader has been closed.
@@ -151,7 +154,7 @@ impl DataState {
     #[inline(always)]
     pub(super) fn new() -> Self {
         DataState {
-            header: DataSpan::Counted { len: 0 },
+            header: DataHeader::Counted { len: 0 },
             finished: false,
             closed: false,
             len_read: 0,
@@ -161,12 +164,12 @@ impl DataState {
     }
 
     #[inline(always)]
-    pub(super) fn set(&mut self, header: DataSpan, data_opened: &mut AtomicBool) {
+    pub(super) fn set(&mut self, header: DataHeader<Span>, data_opened: &mut AtomicBool) {
         data_opened.store(false, Ordering::Release);
-        self.header = header;
-        self.finished = matches!(header, DataSpan::Counted { len: 0 });
+        self.finished = matches!(header, DataHeader::Counted { len: 0 });
         self.closed = false;
         self.len_read = 0;
+        self.header = header;
     }
 
     #[inline(always)]
