@@ -7,7 +7,7 @@ use std::{
     cell::UnsafeCell,
     fmt::{self, Debug, Formatter},
     io::{self, BufRead},
-    mem, str,
+    str,
     sync::atomic::AtomicBool,
 };
 
@@ -15,9 +15,7 @@ use bstr::ByteSlice;
 use thiserror::Error;
 
 use crate::{
-    command::{
-        Blob, Branch, Command, Commit, Commitish, Done, Encoding, Mark, OriginalOid, Progress,
-    },
+    command::{Blob, Branch, Command, Commit, Done, Encoding, Mark, OriginalOid, Progress},
     parse::{
         CommitishSpan, DataReaderError, DataSpan, DataState, Input, PResult, PersonIdentSpan,
         Sliceable, Span,
@@ -63,13 +61,6 @@ pub struct Parser<R> {
     ///
     /// It may only be mutated under `&` within the `DataReader`.
     pub(super) data_state: UnsafeCell<DataState>,
-
-    /// A list of commitish for the current command, to reuse allocations. It
-    /// slices into `self.command_buf`, but is `'static` to allow
-    /// self-references.
-    commitish_scratch: Vec<Commitish<&'static [u8]>>,
-    /// The spans that are converted into `self.commitish_scratch`.
-    commitish_span_scratch: Vec<CommitishSpan>,
 }
 
 // SAFETY: All `UnsafeCell` fields are guaranteed only be modified by a single
@@ -166,8 +157,6 @@ impl<R: BufRead> Parser<R> {
             cursor: Span::from(0..0),
             data_opened: AtomicBool::new(false),
             data_state: UnsafeCell::new(DataState::new()),
-            commitish_scratch: Vec::new(),
-            commitish_span_scratch: Vec::new(),
         }
     }
 
@@ -185,7 +174,6 @@ impl<R: BufRead> Parser<R> {
                 .skip_data(self.data_state.get_mut(), &self.command_buf)?;
         }
 
-        self.commitish_scratch.clear();
         self.command_buf.clear();
         self.bump_command()?;
 
@@ -256,17 +244,7 @@ impl<R: BufRead> Parser<R> {
         let message = self.parse_data_small()?;
         self.bump_command()?;
         let from = self.parse_from()?;
-        self.parse_merge()?;
-
-        self.commitish_scratch.clear();
-        self.commitish_scratch
-            .extend(self.commitish_span_scratch.iter().map(|commitish| {
-                let commitish = commitish.slice(&self.command_buf);
-                // SAFETY: `commitish_scratch` is cleared in `Parser::next`,
-                // before changes to `command_buf` are next made, so there's
-                // never a point where it points to invalid data.
-                unsafe { mem::transmute(commitish) }
-            }));
+        let merge = self.parse_merge()?;
 
         Ok(Command::Commit(Commit {
             branch: Branch {
@@ -283,7 +261,10 @@ impl<R: BufRead> Parser<R> {
             }),
             message: message.slice(self),
             from: from.map(|from| from.slice(self)),
-            merge: &self.commitish_scratch,
+            merge: merge
+                .into_iter()
+                .map(|commitish| commitish.slice(self))
+                .collect(),
             // TODO
         }))
     }
@@ -383,21 +364,14 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_merge` in fast-import.c.
-    fn parse_merge(&mut self) -> PResult<()> {
-        // Check that `commitish_scratch` was cleared by `Parser::next` and that
-        // it is not used for two commands at once.
-        debug_assert!(
-            self.commitish_scratch.is_empty(),
-            "commitish scratch populated before 'merge'",
-        );
-        self.commitish_span_scratch.clear();
+    fn parse_merge(&mut self) -> PResult<Vec<CommitishSpan>> {
+        let mut merge = Vec::new();
         while self.eat_prefix(b"merge ") {
             let commitish = self.cursor;
             self.bump_command()?;
-            self.commitish_span_scratch
-                .push(CommitishSpan::parse(commitish, self)?);
+            merge.push(CommitishSpan::parse(commitish, self)?);
         }
-        Ok(())
+        Ok(merge)
     }
 
     // Corresponds to `parse_ident` in fast-import.c.
@@ -572,8 +546,6 @@ impl<R: Debug> Debug for Parser<R> {
             .field("cursor", &self.cursor)
             .field("data_opened", &self.data_opened)
             .field("data_state", &self.data_state)
-            .field("commitish_scratch", &self.commitish_scratch)
-            .field("commitish_span_scratch", &self.commitish_span_scratch)
             .finish()
     }
 }

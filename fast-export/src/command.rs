@@ -17,7 +17,7 @@ use crate::parse::{DataReader, PResult, Parser};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command<'a, B, R> {
     Blob(Blob<'a, B, R>),
-    Commit(Commit<'a, B>),
+    Commit(Commit<B>),
     Tag(Tag),
     Reset(Reset),
     Ls(Ls),
@@ -71,7 +71,7 @@ impl<B: PartialEq, R> PartialEq for Blob<'_, B, R> {
 impl<B: Eq, R> Eq for Blob<'_, B, R> {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Commit<'a, B> {
+pub struct Commit<B> {
     pub branch: Branch<B>,
     pub mark: Option<Mark>,
     pub original_oid: Option<OriginalOid<B>>,
@@ -80,7 +80,7 @@ pub struct Commit<'a, B> {
     pub encoding: Option<Encoding<B>>,
     pub message: B,
     pub from: Option<Commitish<B>>,
-    pub merge: &'a [Commitish<B>],
+    pub merge: Vec<Commitish<B>>,
     // TODO
 }
 
@@ -279,4 +279,210 @@ pub enum UnitFactor {
     K,
     M,
     G,
+}
+
+pub trait MapBytes<T, U> {
+    type Output;
+
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output;
+}
+
+impl<A, T, U> MapBytes<T, U> for Option<A>
+where
+    A: MapBytes<T, U>,
+{
+    type Output = Option<A::Output>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        self.map(|v| v.map_bytes(f))
+    }
+}
+
+impl<A, T, U> MapBytes<T, U> for Vec<A>
+where
+    A: MapBytes<T, U>,
+{
+    type Output = Vec<A::Output>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        self.into_iter().map(|v| v.map_bytes(f)).collect()
+    }
+}
+
+impl<'a, T, U, R> MapBytes<T, U> for Command<'a, T, R> {
+    type Output = Command<'a, U, R>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        match self {
+            Command::Blob(blob) => Command::Blob(blob.map_bytes(f)),
+            Command::Commit(commit) => Command::Commit(commit.map_bytes(f)),
+            Command::Tag(tag) => Command::Tag(tag),
+            Command::Reset(reset) => Command::Reset(reset),
+            Command::Ls(ls) => Command::Ls(ls),
+            Command::CatBlob(cat_blob) => Command::CatBlob(cat_blob),
+            Command::GetMark(get_mark) => Command::GetMark(get_mark),
+            Command::Checkpoint => Command::Checkpoint,
+            Command::Done(done) => Command::Done(done),
+            Command::Alias(alias) => Command::Alias(alias),
+            Command::Progress(progress) => Command::Progress(progress.map_bytes(f)),
+            Command::Feature(feature) => Command::Feature(feature),
+            Command::Option(option) => Command::Option(option.map_bytes(f)),
+        }
+    }
+}
+
+impl<'a, T, U, R> MapBytes<T, U> for Blob<'a, T, R> {
+    type Output = Blob<'a, U, R>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        Blob {
+            mark: self.mark,
+            original_oid: self.original_oid.map_bytes(f),
+            data_header: self.data_header.map_bytes(f),
+            parser: self.parser,
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Commit<T> {
+    type Output = Commit<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        Commit {
+            branch: self.branch.map_bytes(f),
+            mark: self.mark,
+            original_oid: self.original_oid.map_bytes(f),
+            author: self.author.map_bytes(f),
+            committer: self.committer.map_bytes(f),
+            encoding: self.encoding.map_bytes(f),
+            message: f(self.message),
+            from: self.from.map_bytes(f),
+            merge: self.merge.map_bytes(f),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Progress<T> {
+    type Output = Progress<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        Progress {
+            message: f(self.message),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for OptionCommand<T> {
+    type Output = OptionCommand<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        match self {
+            OptionCommand::Git(option) => OptionCommand::Git(option.map_bytes(f)),
+            OptionCommand::Other(option) => OptionCommand::Other(option.map_bytes(f)),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for OptionGit<T> {
+    type Output = OptionGit<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        match self {
+            OptionGit::MaxPackSize(n) => OptionGit::MaxPackSize(n),
+            OptionGit::BigFileThreshold(n) => OptionGit::BigFileThreshold(n),
+            OptionGit::Depth(n) => OptionGit::Depth(n),
+            OptionGit::ActiveBranches(n) => OptionGit::ActiveBranches(n),
+            OptionGit::ExportPackEdges(file) => OptionGit::ExportPackEdges(f(file)),
+            OptionGit::Quiet => OptionGit::Quiet,
+            OptionGit::Stats => OptionGit::Stats,
+            OptionGit::AllowUnsafeFeatures => OptionGit::AllowUnsafeFeatures,
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for OptionOther<T> {
+    type Output = OptionOther<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        OptionOther {
+            option: f(self.option),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Branch<T> {
+    type Output = Branch<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        Branch {
+            branch: f(self.branch),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for OriginalOid<T> {
+    type Output = OriginalOid<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        OriginalOid { oid: f(self.oid) }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Commitish<T> {
+    type Output = Commitish<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        match self {
+            Commitish::Mark(mark) => Commitish::Mark(mark),
+            Commitish::BranchOrOid(commit) => Commitish::BranchOrOid(f(commit)),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for PersonIdent<T> {
+    type Output = PersonIdent<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        PersonIdent {
+            name: f(self.name),
+            email: f(self.email),
+            date: f(self.date),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Encoding<T> {
+    type Output = Encoding<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        Encoding {
+            encoding: f(self.encoding),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for DataHeader<T> {
+    type Output = DataHeader<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        match self {
+            DataHeader::Counted { len } => DataHeader::Counted { len },
+            DataHeader::Delimited { delim } => DataHeader::Delimited { delim: f(delim) },
+        }
+    }
 }
