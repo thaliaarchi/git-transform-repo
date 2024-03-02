@@ -53,6 +53,16 @@ The converse, moving a submodule in-tree is a special case of splicing repos.
 The files are disjoint and the merge points are defined, so many problems,
 except for the graph topology, are simplified.
 
+## Fixing foxtrot merges
+
+It may be simple to fix [foxtrot merges](https://bit-booster.blogspot.com/2016/02/no-foxtrots-allowed.html),
+i.e., merges where the mainline branch is not the first parent, by switching the
+order of the parents and using `--full-tree`. filter-repo documents earlier
+difficulties with foxtrot merges in [a31a381] (filter-repo: delete complex code,
+2019-03-14).
+
+[a31a381]: https://github.com/newren/git-filter-repo/commit/a31a381fb81fe3ec7169ee4fcaada8f75505e527
+
 ## Modifying files in any commit
 
 filter-repo does not allow filters to modify blobs while processing commits, due
