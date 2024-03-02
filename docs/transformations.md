@@ -61,4 +61,27 @@ to performance code. (It's discussed in `contrib/filter-repo-demos/filter-lamely
 However, this would be useful, for example, to automatically update license
 header years in any commit that touches a file that had not already been
 modified that year. With the extended hook callbacks, the changed blobs could
-be requested on demand and modified.
+be requested on demand (using `cat-blob` in the fast-import stream) and
+modified.
+
+## Rewriting quoted commit messages
+
+When rewriting commit messages, commits that quote the header line should be
+updated to match.
+
+Git and the Linux kernel use the convention of `%h (%s, %as)`, sometimes with
+variation in quotation. The first such commit in git.git is [702088a] (update
+'git rebase' documentation, 2008-03-10) and the first in torvalds/linux.git is
+[9da1f7e] (powerpc: Do not ignore arch/powerpc/include, 2008-08-07). Both of
+these repos could be a good test of this feature.
+
+Surrounding text could be rewrapped when a changed message overflows. This would
+require inferring the locally used width or just using 80.
+
+Short hash lengths increase over time, since the number of objects in a repo
+also increases. The original quoted lengths should be preserved. (However, a
+large repo with many conflicts may benefit from a transformation that increases
+the quoted hash length for early commits.)
+
+[702088a]: https://git.kernel.org/pub/scm/git/git.git/commit/?id=702088afc680afef231d4a24bb5890f1d96a2cc9
+[9da1f7e]: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=9da1f7e69aa4545d45d3435865c56f1e67c4b26a
