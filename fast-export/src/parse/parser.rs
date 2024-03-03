@@ -8,7 +8,7 @@ use std::{
     fmt::{self, Debug, Formatter},
     io::{self, BufRead},
     str,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use bstr::ByteSlice;
@@ -171,8 +171,12 @@ impl<R: BufRead> Parser<R> {
     ///
     // Corresponds to the loop in `cmd_fast_import` in fast-import.c.
     pub fn next(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        // Finish reading the previous data stream, if the user didn't.
+        // Read the previous data stream, if the user didn't. Error if the user
+        // only partially read the data stream.
         if !self.data_state.get_mut().finished() {
+            if self.data_opened.load(Ordering::Acquire) {
+                return Err(DataReaderError::Unfinished.into());
+            }
             self.input
                 .get_mut()
                 .skip_data(self.data_state.get_mut(), &self.command_buf)?;
