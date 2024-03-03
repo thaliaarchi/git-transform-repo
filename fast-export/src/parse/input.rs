@@ -208,6 +208,7 @@ impl<R: BufRead> Input<R> {
             }
             DataHeader::Delimited { delim } => {
                 let delim = delim.slice(command_buf);
+                s.len_read += (s.line_buf.len() - s.line_offset) as u64;
                 loop {
                     if self.eof {
                         return Err(ParseError::UnterminatedData.into());
