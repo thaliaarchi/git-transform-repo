@@ -89,34 +89,40 @@ impl<R: BufRead> Input<R> {
     /// span in `header` must be in `command_buf`.
     pub(super) fn read_data_to_end(
         &mut self,
+        buf: &mut Vec<u8>,
         header: DataHeader<Span>,
-        command_buf: &mut Vec<u8>,
-    ) -> PResult<()> {
+        command_buf: &[u8],
+    ) -> PResult<usize> {
         match header {
             DataHeader::Counted { len } => {
                 if usize::try_from(len).is_err() {
                     return Err(io::ErrorKind::OutOfMemory.into());
                 }
+                buf.reserve(len as usize);
                 // When `Read::read_buf` is stabilized, it might be worth using
                 // it directly.
-                let start = command_buf.len();
-                let n = (&mut self.r).take(len).read_to_end(command_buf)?;
-                self.line += count_lf(&command_buf[start..]);
+                let start = buf.len();
+                let n = (&mut self.r).take(len).read_to_end(buf)?;
+                self.line += count_lf(&buf[start..]);
                 if (n as u64) < len {
                     return Err(ParseError::DataUnexpectedEof.into());
                 }
                 debug_assert!(n as u64 == len, "misbehaving Take implementation");
+                Ok(n)
             }
-            DataHeader::Delimited { delim } => loop {
-                let len = command_buf.len();
-                let line = self.read_line(command_buf)?;
-                if line.slice(command_buf) == delim.slice(command_buf) {
-                    command_buf.truncate(len);
-                    break;
+            DataHeader::Delimited { delim } => {
+                let delim = delim.slice(command_buf);
+                let start = buf.len();
+                loop {
+                    let len = buf.len();
+                    let line = self.read_line(buf)?;
+                    if line.slice(buf) == delim {
+                        buf.truncate(len);
+                        return Ok(len - start);
+                    }
                 }
-            },
+            }
         }
-        Ok(())
     }
 
     /// Reads from the current data stream into `buf`. The delimiter span must
@@ -148,7 +154,7 @@ impl<R: BufRead> Input<R> {
                     debug_assert!(s.len_read == len, "read too many bytes");
                     s.finished = true;
                 }
-                self.line += count_lf(buf);
+                self.line += count_lf(&buf[..n]);
                 Ok(n)
             }
             DataHeader::Delimited { delim } => {
@@ -195,7 +201,7 @@ impl<R: BufRead> Input<R> {
                     let n = usize::try_from(len - s.len_read)
                         .unwrap_or(usize::MAX)
                         .min(buf.len());
-                    self.line += count_lf(buf);
+                    self.line += count_lf(&buf[..n]);
                     self.r.consume(n);
                     s.len_read += n as u64;
                 }

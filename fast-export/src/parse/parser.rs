@@ -53,6 +53,9 @@ pub struct Parser<R> {
     /// The current selection in `self.command_buf`, which is being processed.
     cursor: Span,
 
+    /// A buffer containing the current commit or tag message.
+    message_buf: Vec<u8>,
+
     /// Whether a `DataReader` has been opened for reading. This guards
     /// `Blob::open`, to ensure that only one `DataReader` can be opened per
     /// call to `Parser::next`.
@@ -155,6 +158,7 @@ impl<R: BufRead> Parser<R> {
             input: UnsafeCell::new(Input::new(input)),
             command_buf: Vec::new(),
             cursor: Span::from(0..0),
+            message_buf: Vec::new(),
             data_opened: AtomicBool::new(false),
             data_state: UnsafeCell::new(DataState::new()),
         }
@@ -238,7 +242,7 @@ impl<R: BufRead> Parser<R> {
             .parse_person_ident(b"committer ")?
             .ok_or(ParseError::ExpectedCommitter)?;
         let encoding = self.parse_encoding()?;
-        let message = self.parse_data_small()?;
+        self.parse_data_small()?;
         self.bump_command()?;
         let from = self.parse_from()?;
         let merge = self.parse_merge()?;
@@ -250,12 +254,14 @@ impl<R: BufRead> Parser<R> {
             author,
             committer,
             encoding,
-            message,
+            message: Span::from(0..0),
             from,
             merge,
             // TODO
         };
-        Ok(Command::Commit(slice(commit, self)))
+        let mut commit = slice(commit, self);
+        commit.message = &self.message_buf;
+        Ok(Command::Commit(commit))
     }
 
     // Corresponds to `parse_new_tag` in fast-import.c.
@@ -472,13 +478,12 @@ impl<R: BufRead> Parser<R> {
     /// limit.
     ///
     // Corresponds to `parse_data` in fast-import.c.
-    fn parse_data_small(&mut self) -> PResult<Span> {
+    fn parse_data_small(&mut self) -> PResult<usize> {
         let header = self.parse_data_header()?;
-        let start = self.command_buf.len();
+        self.message_buf.clear();
         self.input
             .get_mut()
-            .read_data_to_end(header, &mut self.command_buf)?;
-        Ok(Span::from(start..self.command_buf.len()))
+            .read_data_to_end(&mut self.message_buf, header, &self.command_buf)
     }
 
     /// Reads a line from input into `self.line_buf`, stripping the LF delimiter
@@ -536,6 +541,7 @@ impl<R: Debug> Debug for Parser<R> {
             .field("input", &self.input)
             .field("command_buf", &self.command_buf.as_bstr())
             .field("cursor", &self.cursor)
+            .field("message_buf", &self.message_buf.as_bstr())
             .field("data_opened", &self.data_opened)
             .field("data_state", &self.data_state)
             .finish()

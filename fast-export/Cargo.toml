@@ -10,4 +10,5 @@ categories = ["development-tools"]
 
 [dependencies]
 bstr = "1.9.0"
+paste = "1.0.14"
 thiserror = "1.0.57"

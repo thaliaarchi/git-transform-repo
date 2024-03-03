@@ -141,12 +141,27 @@ impl<'a, R: BufRead> DataReader<'a, R> {
     }
 }
 
-/// Identical to [`DataReader::read_next`], but converts [`ParseError`](super::ParseError)
-/// to [`io::Error`].
 impl<R: BufRead> Read for DataReader<'_, R> {
+    /// Identical to [`DataReader::read_next`], but converts [`ParseError`](super::ParseError)
+    /// to [`io::Error`].
     #[inline(always)]
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.read_next(buf).map_err(|err| err.into())
+    }
+
+    #[inline]
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        // SAFETY: See `DataReader::read_next`.
+        let (input, data_state) = unsafe {
+            (
+                &mut *self.parser.input.get(),
+                &mut *self.parser.data_state.get(),
+            )
+        };
+        let n = input.read_data_to_end(buf, data_state.header.clone(), &self.parser.command_buf)?;
+        data_state.finished = true;
+        data_state.len_read += n as u64;
+        Ok(n)
     }
 }
 
@@ -183,38 +198,61 @@ mod tests {
     use std::io::Read;
 
     use bstr::ByteSlice;
+    use paste::paste;
 
     use crate::{
         command::{Command, DataHeader, Done, Mark, OriginalOid},
-        parse::Parser,
+        parse::{DataReaderError, Parser, StreamError},
     };
 
-    #[test]
-    fn parse_counted_blob_read_stream() {
-        parse_counted_blob(true, true);
-        parse_counted_blob(true, false);
+    enum Mode {
+        NoOpen,
+        ReadOnce,
+        ReadOnceSkip,
+        SkipAll,
+        ReadToEnd,
     }
 
-    #[test]
-    fn parse_counted_blob_skip_stream() {
-        parse_counted_blob(false, true);
-        parse_counted_blob(false, false);
+    macro_rules! test_parse_blob(($data_kind:ident, [$($ModeVariant:ident $mode:ident),+ $(,)?]) => {
+        paste! {
+            $(
+                #[test]
+                fn [<parse_ $data_kind _blob_ $mode>]() {
+                    [<parse_ $data_kind _blob>](Mode::$ModeVariant, true);
+                    [<parse_ $data_kind _blob>](Mode::$ModeVariant, false);
+                }
+            )+
+        }
+    });
+
+    test_parse_blob!(counted, [NoOpen no_open, ReadOnce read_once, ReadOnceSkip read_once_skip, SkipAll skip_all, ReadToEnd read_to_end]);
+    test_parse_blob!(delimited, [NoOpen no_open, ReadOnce read_once, ReadOnceSkip read_once_skip, SkipAll skip_all, ReadToEnd read_to_end]);
+
+    fn parse_counted_blob(mode: Mode, optional_lf: bool) {
+        parse_blob(
+            b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata 14\nHello, world!\n",
+            DataHeader::Counted { len: 14 },
+            mode,
+            optional_lf,
+        )
     }
 
-    #[test]
-    fn parse_delimited_blob_read_stream() {
-        parse_delimited_blob(true, true);
-        parse_delimited_blob(true, false);
+    fn parse_delimited_blob(mode: Mode, optional_lf: bool) {
+        parse_blob(
+            b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata <<EOF\nHello, world!\nEOF\n",
+            DataHeader::Delimited { delim: b"EOF" },
+            mode,
+            optional_lf,
+        )
     }
 
-    #[test]
-    fn parse_delimited_blob_skip_stream() {
-        parse_delimited_blob(false, true);
-        parse_delimited_blob(false, false);
-    }
-
-    fn parse_counted_blob(read_all: bool, optional_lf: bool) {
-        let mut input = b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata 14\nHello, world!\n".to_vec();
+    fn parse_blob(
+        input: &'static [u8],
+        header: DataHeader<&'static [u8]>,
+        mode: Mode,
+        optional_lf: bool,
+    ) {
+        let mut input = input.to_vec();
         if optional_lf {
             input.push(b'\n');
         }
@@ -232,51 +270,47 @@ mod tests {
                 oid: &b"3141592653589793238462643383279502884197"[..],
             }),
         );
-        assert_eq!(blob.data_header, DataHeader::Counted { len: 14 });
+        assert_eq!(blob.data_header, header);
 
-        if read_all {
-            let mut r = blob.open().unwrap();
-            let mut buf = Vec::new();
-            if let Err(err) = r.read_to_end(&mut buf) {
-                panic!("read to end: {err}\nbuffer: {:?}", buf.as_bstr());
+        match mode {
+            Mode::NoOpen => {}
+            Mode::ReadOnce => {
+                let mut r = blob.open().unwrap();
+                let mut b = [0; 1];
+                assert_eq!(r.read(&mut b).unwrap(), 1, "read");
+                assert_eq!(b, [b'H']);
+                match r.close() {
+                    Err(StreamError::DataReader(DataReaderError::Unfinished)) => {}
+                    res => panic!("close: {res:?}"),
+                }
+                match parser.next() {
+                    Err(StreamError::DataReader(DataReaderError::Unfinished)) => {}
+                    res => panic!("next: {res:?}"),
+                }
+                return;
             }
-            assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
-        }
-
-        assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
-    }
-
-    fn parse_delimited_blob(read_all: bool, optional_lf: bool) {
-        let mut input = b"blob\nmark :42\noriginal-oid 3141592653589793238462643383279502884197\ndata <<EOF\nHello, world!\nEOF\n".to_vec();
-        if optional_lf {
-            input.push(b'\n');
-        }
-        let mut input = &input[..];
-        let mut parser = Parser::new(&mut input);
-
-        let command = parser.next().unwrap();
-        let Command::Blob(blob) = command else {
-            panic!("not a blob: {command:?}");
-        };
-        assert_eq!(blob.mark, Some(Mark::new(42).unwrap()));
-        assert_eq!(
-            blob.original_oid,
-            Some(OriginalOid {
-                oid: &b"3141592653589793238462643383279502884197"[..],
-            }),
-        );
-        assert_eq!(
-            blob.data_header,
-            DataHeader::Delimited { delim: &b"EOF"[..] },
-        );
-
-        if read_all {
-            let mut r = blob.open().unwrap();
-            let mut buf = Vec::new();
-            if let Err(err) = r.read_to_end(&mut buf) {
-                panic!("read to end: {err}\nbuffer: {:?}", buf.as_bstr());
+            Mode::ReadOnceSkip => {
+                let mut r = blob.open().unwrap();
+                let mut b = [0; 1];
+                assert_eq!(r.read(&mut b).unwrap(), 1, "read");
+                assert_eq!(b, [b'H']);
+                assert_eq!(r.skip_rest().unwrap(), 13, "skip_rest");
             }
-            assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "data stream");
+            Mode::SkipAll => {
+                let mut r = blob.open().unwrap();
+                assert_eq!(r.skip_rest().unwrap(), 14, "skip_rest");
+            }
+            Mode::ReadToEnd => {
+                let mut r = blob.open().unwrap();
+                let mut buf = Vec::new();
+                match r.read_to_end(&mut buf) {
+                    Ok(n) => {
+                        assert_eq!(n, 14);
+                        assert_eq!(buf.as_bstr(), b"Hello, world!\n".as_bstr(), "buf");
+                    }
+                    Err(err) => panic!("read to end: {err}\nbuffer: {:?}", buf.as_bstr()),
+                }
+            }
         }
 
         assert_eq!(parser.next().unwrap(), Command::Done(Done::Eof));
