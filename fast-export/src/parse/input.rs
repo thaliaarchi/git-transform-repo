@@ -3,11 +3,14 @@
 // This file is part of fast-export-rust, distributed under the GPL 2.0 with a
 // linking exception. For the full terms, see the included COPYING file.
 
-use std::io::{self, BufRead, Read};
+use std::{
+    cell::UnsafeCell,
+    io::{self, BufRead, Read},
+};
 
 use crate::{
     command::DataHeader,
-    parse::{DataReaderError, DataState, PResult, ParseError, Span},
+    parse::{BufPool, DataReaderError, DataState, PResult, ParseError},
 };
 
 /// Input for a fast-export stream.
@@ -18,18 +21,21 @@ pub(super) struct Input<R> {
     eof: bool,
     /// The current line number.
     line: u64,
-    /// Whether the previous command ended with an optional LF.
-    skip_optional_lf: bool,
+}
+
+pub(super) struct BufInput<R> {
+    input: UnsafeCell<Input<R>>,
+    lines: BufPool,
+    unread: UnsafeCell<bool>,
 }
 
 impl<R: BufRead> Input<R> {
     #[inline(always)]
-    pub(super) fn new(input: R) -> Self {
+    pub fn new(input: R) -> Self {
         Input {
             r: input,
             eof: false,
             line: 0,
-            skip_optional_lf: false,
         }
     }
 
@@ -38,7 +44,7 @@ impl<R: BufRead> Input<R> {
     ///
     // Corresponds to `strbuf_getline_lf` in strbuf.c.
     #[inline(always)]
-    fn read_line(&mut self, buf: &mut Vec<u8>) -> io::Result<Span> {
+    fn read_line<'a>(&mut self, buf: &'a mut Vec<u8>) -> io::Result<&'a [u8]> {
         debug_assert!(!self.eof, "already at EOF");
         let start = buf.len();
         self.r.read_until(b'\n', buf)?;
@@ -50,139 +56,94 @@ impl<R: BufRead> Input<R> {
             self.eof = true;
         }
         self.line += 1;
-        Ok(Span::from(start..end))
+        Ok(&buf[start..end])
     }
 
-    /// Reads a line from this input into `buf`, stripping the LF delimiter and
-    /// skipping any comment lines that start with `#`. Lines may
-    /// contain any bytes (including NUL), except for LF.
-    ///
-    // Corresponds to `read_next_command` in fast-import.c.
-    #[inline(always)]
-    pub(super) fn read_command(&mut self, buf: &mut Vec<u8>, cursor: &mut Span) -> io::Result<()> {
-        loop {
-            if self.eof {
-                cursor.start = cursor.end;
-                break;
-            }
-            *cursor = self.read_line(buf)?;
-            let line = cursor.slice(buf);
-            if self.skip_optional_lf {
-                self.skip_optional_lf = false;
-                if line.is_empty() {
-                    // If we are at the start of a command, but the LF is from
-                    // the previous, clear it.
-                    if cursor.start == 0 {
-                        buf.clear();
-                    }
-                    continue;
-                }
-            }
-            if !line.starts_with(b"#") {
-                break;
-            }
+    /// Reads all of the counted data stream into `buf`.
+    pub fn read_counted_data_to_end(&mut self, len: u64, buf: &mut Vec<u8>) -> PResult<usize> {
+        if usize::try_from(len).is_err() {
+            return Err(io::ErrorKind::OutOfMemory.into());
         }
-        Ok(())
+        buf.reserve(len as usize);
+        let start = buf.len();
+        let n = (&mut self.r).take(len).read_to_end(buf)?;
+        self.line += count_lf(&buf[start..]);
+        if (n as u64) < len {
+            return Err(ParseError::DataUnexpectedEof.into());
+        }
+        debug_assert!(n as u64 == len, "misbehaving Take implementation");
+        Ok(n)
     }
 
-    /// Reads all of the described data stream into `command_buf`. The delimiter
-    /// span in `header` must be in `command_buf`.
-    pub(super) fn read_data_to_end(
+    /// Reads all of the delimited data stream into `buf`.
+    pub fn read_delimited_data_to_end(
         &mut self,
+        delim: &[u8],
         buf: &mut Vec<u8>,
-        header: DataHeader<Span>,
-        command_buf: &[u8],
     ) -> PResult<usize> {
-        match header {
-            DataHeader::Counted { len } => {
-                if usize::try_from(len).is_err() {
-                    return Err(io::ErrorKind::OutOfMemory.into());
-                }
-                buf.reserve(len as usize);
-                // When `Read::read_buf` is stabilized, it might be worth using
-                // it directly.
-                let start = buf.len();
-                let n = (&mut self.r).take(len).read_to_end(buf)?;
-                self.line += count_lf(&buf[start..]);
-                if (n as u64) < len {
-                    return Err(ParseError::DataUnexpectedEof.into());
-                }
-                debug_assert!(n as u64 == len, "misbehaving Take implementation");
-                Ok(n)
-            }
-            DataHeader::Delimited { delim } => {
-                let delim = delim.slice(command_buf);
-                let start = buf.len();
-                loop {
-                    let len = buf.len();
-                    let line = self.read_line(buf)?;
-                    if line.slice(buf) == delim {
-                        buf.truncate(len);
-                        return Ok(len - start);
-                    }
-                }
+        let start = buf.len();
+        loop {
+            let len = buf.len();
+            let line = self.read_line(buf)?;
+            if line == delim {
+                buf.truncate(len);
+                return Ok(len - start);
             }
         }
     }
 
-    /// Reads from the current data stream into `buf`. The delimiter span must
-    /// be in `command_buf`.
-    pub(super) fn read_data(
-        &mut self,
-        buf: &mut [u8],
-        s: &mut DataState,
-        command_buf: &[u8],
-    ) -> PResult<usize> {
+    /// Reads from the data stream into `buf`.
+    pub fn read_data(&mut self, buf: &mut [u8], s: &mut DataState) -> PResult<usize> {
         if s.closed {
             return Err(DataReaderError::Closed.into());
         }
         if buf.is_empty() || s.finished {
             return Ok(0);
         }
-        match s.header {
-            DataHeader::Counted { len } => {
+        if s.is_counted {
+            if self.eof {
+                return Err(ParseError::DataUnexpectedEof.into());
+            }
+            let end = usize::try_from(s.len - s.len_read)
+                .unwrap_or(usize::MAX)
+                .min(buf.len());
+            let n = self.r.read(&mut buf[..end])?;
+            debug_assert!(n <= end, "misbehaving Read implementation");
+            s.len_read += n as u64;
+            if s.len_read >= s.len {
+                debug_assert!(s.len_read == s.len, "read too many bytes");
+                s.finished = true;
+            }
+            self.line += count_lf(&buf[..n]);
+            Ok(n)
+        } else {
+            if s.line_offset >= s.line_buf.len() {
                 if self.eof {
-                    return Err(ParseError::DataUnexpectedEof.into());
+                    return Err(ParseError::UnterminatedData.into());
                 }
-                let end = usize::try_from(len - s.len_read)
-                    .unwrap_or(usize::MAX)
-                    .min(buf.len());
-                let n = self.r.read(&mut buf[..end])?;
-                debug_assert!(n <= end, "misbehaving Read implementation");
-                s.len_read += n as u64;
-                if s.len_read >= len {
-                    debug_assert!(s.len_read == len, "read too many bytes");
+                s.line_buf.clear();
+                s.line_offset = 0;
+                let line = self.read_line(&mut s.line_buf)?;
+                if line == s.delim {
                     s.finished = true;
+                    return Ok(0);
                 }
-                self.line += count_lf(&buf[..n]);
-                Ok(n)
-            }
-            DataHeader::Delimited { delim } => {
-                let delim = delim.slice(command_buf);
-                if s.line_offset >= s.line_buf.len() {
-                    if self.eof {
-                        return Err(ParseError::UnterminatedData.into());
-                    }
-                    s.line_buf.clear();
-                    s.line_offset = 0;
-                    let line = self.read_line(&mut s.line_buf)?;
-                    if line.slice(&s.line_buf) == delim {
-                        s.finished = true;
-                        return Ok(0);
-                    }
+                if s.line_buf.is_empty() {
+                    // Avoid returning `Ok(0)`
+                    return Err(ParseError::UnterminatedData.into());
                 }
-                let off = s.line_offset;
-                let n = (s.line_buf.len() - off).min(buf.len());
-                buf[..n].copy_from_slice(&s.line_buf[off..off + n]);
-                s.line_offset += n;
-                s.len_read += n as u64;
-                Ok(n)
             }
+            let off = s.line_offset;
+            let n = (s.line_buf.len() - off).min(buf.len());
+            buf[..n].copy_from_slice(&s.line_buf[off..off + n]);
+            s.line_offset += n;
+            s.len_read += n as u64;
+            Ok(n)
         }
     }
 
-    /// Reads to the end of the data stream without consuming it.
-    pub(super) fn skip_data(&mut self, s: &mut DataState, command_buf: &[u8]) -> PResult<u64> {
+    /// Reads to the end of the data stream without copying it.
+    pub fn skip_data(&mut self, s: &mut DataState) -> PResult<u64> {
         if s.closed {
             return Err(DataReaderError::Closed.into());
         }
@@ -190,36 +151,32 @@ impl<R: BufRead> Input<R> {
             return Ok(0);
         }
         let start_len = s.len_read;
-        match s.header {
-            DataHeader::Counted { len } => {
-                while s.len_read < len {
-                    let buf = self.r.fill_buf()?;
-                    if buf.is_empty() {
-                        self.eof = true;
-                        return Err(ParseError::DataUnexpectedEof.into());
-                    }
-                    let n = usize::try_from(len - s.len_read)
-                        .unwrap_or(usize::MAX)
-                        .min(buf.len());
-                    self.line += count_lf(&buf[..n]);
-                    self.r.consume(n);
-                    s.len_read += n as u64;
+        if s.is_counted {
+            while s.len_read < s.len {
+                let buf = self.r.fill_buf()?;
+                if buf.is_empty() {
+                    self.eof = true;
+                    return Err(ParseError::DataUnexpectedEof.into());
                 }
+                let n = usize::try_from(s.len - s.len_read)
+                    .unwrap_or(usize::MAX)
+                    .min(buf.len());
+                self.line += count_lf(&buf[..n]);
+                self.r.consume(n);
+                s.len_read += n as u64;
             }
-            DataHeader::Delimited { delim } => {
-                let delim = delim.slice(command_buf);
-                s.len_read += (s.line_buf.len() - s.line_offset) as u64;
-                loop {
-                    if self.eof {
-                        return Err(ParseError::UnterminatedData.into());
-                    }
-                    s.line_buf.clear();
-                    let line = self.read_line(&mut s.line_buf)?;
-                    if line.slice(&s.line_buf) == delim {
-                        break;
-                    }
-                    s.len_read += s.line_buf.len() as u64;
+        } else {
+            s.len_read += (s.line_buf.len() - s.line_offset) as u64;
+            loop {
+                if self.eof {
+                    return Err(ParseError::UnterminatedData.into());
                 }
+                s.line_buf.clear();
+                let line = self.read_line(&mut s.line_buf)?;
+                if line == s.delim {
+                    break;
+                }
+                s.len_read += s.line_buf.len() as u64;
             }
         }
         s.finished = true;
@@ -227,14 +184,140 @@ impl<R: BufRead> Input<R> {
     }
 
     #[inline(always)]
-    pub(super) fn eof(&self) -> bool {
+    pub fn eof(&self) -> bool {
         self.eof
+    }
+}
+
+impl<R: BufRead> BufInput<R> {
+    /// The number of lines (excluding data streams) from before the current
+    /// command to show in a crash dump.
+    const CONTEXT_LINES_BEFORE: usize = 20;
+
+    #[inline]
+    pub fn new(input: R) -> Self {
+        BufInput {
+            input: UnsafeCell::new(Input::new(input)),
+            lines: BufPool::new(),
+            unread: UnsafeCell::new(false),
+        }
+    }
+
+    /// Truncates the contextual lines shown in a crash dump to a fixed amount.
+    #[inline]
+    pub fn truncate_context(&mut self) {
+        let len = Self::CONTEXT_LINES_BEFORE + *self.unread.get_mut() as usize;
+        self.lines.truncate_back(len);
+    }
+
+    /// Reads a line from this input, stripping the LF delimiter and skipping
+    /// any comment lines that start with `#`. Lines may contain any bytes
+    /// (including NUL), except for LF.
+    ///
+    // Corresponds to `read_next_command` in fast-import.c.
+    fn read_command(&self) -> io::Result<Option<&[u8]>> {
+        let input = unsafe { &mut *self.input.get() };
+        while !input.eof() {
+            let line_buf = self.lines.push_back();
+            let line = input.read_line(line_buf)?;
+            if !line.starts_with(b"#") {
+                return Ok(Some(line));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Reads the next command and consumes it.
+    pub fn next_command(&self) -> io::Result<Option<&[u8]>> {
+        let command = self.peek_command()?;
+        self.bump_command();
+        Ok(command)
+    }
+
+    /// Reads the next command without consuming it.
+    pub fn peek_command(&self) -> io::Result<Option<&[u8]>> {
+        let unread = unsafe { &mut *self.unread.get() };
+        if *unread {
+            let back = self.lines.back();
+            debug_assert!(back.is_some(), "unread line not in BufPool");
+            Ok(back)
+        } else {
+            *unread = true;
+            self.read_command()
+        }
+    }
+
+    /// Consumes the peeked command. `bump_command` must be preceded by
+    /// `peek_command`.
+    #[inline(always)]
+    pub fn bump_command(&self) {
+        let unread = unsafe { &mut *self.unread.get() };
+        debug_assert!(*unread, "bump_command not preceded by peek_command");
+        *unread = false;
     }
 
     #[inline(always)]
-    pub(super) fn skip_optional_lf(&mut self) {
-        debug_assert!(!self.skip_optional_lf, "already skipping optional LF");
-        self.skip_optional_lf = true;
+    pub fn parse_if_prefix<'a, F, T>(&'a self, prefix: &[u8], parse: F) -> PResult<Option<T>>
+    where
+        F: FnOnce(&'a [u8]) -> PResult<T>,
+        T: 'a,
+    {
+        let line = self.peek_command()?;
+        if let Some(arg) = line.and_then(|line| line.strip_prefix(prefix)) {
+            self.bump_command();
+            parse(arg).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[inline(always)]
+    pub fn parse_if_prefix_many<'a, F, T>(&'a self, prefix: &[u8], mut parse: F) -> PResult<Vec<T>>
+    where
+        F: FnMut(&'a [u8]) -> PResult<T>,
+        T: 'a,
+    {
+        let mut directives = Vec::new();
+        while let Some(directive) = self.parse_if_prefix(prefix, &mut parse)? {
+            directives.push(directive);
+        }
+        Ok(directives)
+    }
+
+    /// Reads from the data stream into `buf`.
+    pub fn read_data(&self, buf: &mut [u8], s: &mut DataState) -> PResult<usize> {
+        let input = unsafe { &mut *self.input.get() };
+        // TODO: Handle optional LF
+        input.read_data(buf, s)
+    }
+
+    /// Reads to the end of the data stream without copying it.
+    pub fn skip_data(&self, s: &mut DataState) -> PResult<u64> {
+        let input = unsafe { &mut *self.input.get() };
+        let n = input.skip_data(s)?;
+        // TODO: Could consume LF twice
+        // TODO: Move DataState handling to BufInput
+        self.skip_optional_lf()?;
+        Ok(n)
+    }
+
+    /// Reads all of the data stream into `buf`.
+    pub fn read_data_to_end(&self, header: DataHeader<&[u8]>, buf: &mut Vec<u8>) -> PResult<usize> {
+        let input = unsafe { &mut *self.input.get() };
+        let len = match header {
+            DataHeader::Counted { len } => input.read_counted_data_to_end(len, buf)?,
+            DataHeader::Delimited { delim } => input.read_delimited_data_to_end(delim, buf)?,
+        };
+        self.skip_optional_lf()?;
+        Ok(len)
+    }
+
+    /// Skips a trailing LF, if one exists, before reading the next directive.
+    pub fn skip_optional_lf(&self) -> PResult<()> {
+        if self.peek_command()? == Some(b"") {
+            self.bump_command();
+        }
+        Ok(())
     }
 }
 

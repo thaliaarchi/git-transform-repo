@@ -18,14 +18,17 @@ use static_assertions::{assert_impl_all, assert_not_impl_any};
 // (except for ones larger than `BufPool::MAX_BUF_CAPACITY`) so their
 // allocations can be reused.
 
-/// An ordered pool of `Vec<u8>` buffers.
+/// An ordered pool of `Vec<u8>` buffers. Slices returned from it are stable and
+/// may be retained until [`BufPool::truncate_back`] is called.
 #[repr(transparent)]
 pub(crate) struct BufPool {
     inner: UnsafeCell<BufPoolInner>,
 }
 
 struct BufPoolInner {
+    /// The buffers that are currently live and may be referenced externally.
     live: VecDeque<Vec<u8>>,
+    /// Buffers that can be reused.
     free: Vec<Vec<u8>>,
 }
 
@@ -58,7 +61,9 @@ impl BufPool {
         }
     }
 
-    /// Pushes an empty buffer to the pool and returns it.
+    /// Pushes an empty buffer to the pool and returns it. Initialization of the
+    /// returned `Vec` is performed by the caller and a slice of it is stable
+    /// until the next call to [`BufPool::truncate_back`].
     #[inline]
     pub fn push_back(&self) -> &mut Vec<u8> {
         let pool = unsafe { &mut *self.inner.get() };
@@ -66,6 +71,13 @@ impl BufPool {
         buf.clear();
         pool.live.push_back(buf);
         pool.live.back_mut().unwrap()
+    }
+
+    /// Returns a reference to the buffer at the back of the pool.
+    #[inline]
+    pub fn back(&self) -> Option<&[u8]> {
+        let pool = unsafe { &*self.inner.get() };
+        pool.live.back().map(Vec::as_slice)
     }
 
     /// Truncates the pool to only the latest `len` elements.

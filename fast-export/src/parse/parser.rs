@@ -5,13 +5,11 @@
 
 use std::{
     cell::UnsafeCell,
-    fmt::{self, Debug, Formatter},
     io::{self, BufRead},
     str,
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use bstr::ByteSlice;
 use thiserror::Error;
 
 use crate::{
@@ -19,7 +17,7 @@ use crate::{
         Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, Mark, OriginalOid,
         PersonIdent, Progress,
     },
-    parse::{slice, DataReaderError, DataState, Input, PResult, Sliceable, Span},
+    parse::{BufInput, DataReaderError, DataState, PResult},
 };
 
 /// A zero-copy pull parser for fast-export streams.
@@ -46,15 +44,10 @@ pub struct Parser<R> {
     /// safely performed by ensuring only a single instance of `DataReader` can
     /// be constructed at a time by guarding its construction with
     /// `Parser::data_opened`.
-    pub(super) input: UnsafeCell<Input<R>>,
-
-    /// A buffer containing all of the current command and its sub-commands.
-    pub(super) command_buf: Vec<u8>,
-    /// The current selection in `self.command_buf`, which is being processed.
-    cursor: Span,
+    pub(super) input: BufInput<R>,
 
     /// A buffer containing the current commit or tag message.
-    message_buf: Vec<u8>,
+    message_buf: UnsafeCell<Vec<u8>>,
 
     /// Whether a `DataReader` has been opened for reading. This guards
     /// `Blob::open`, to ensure that only one `DataReader` can be opened per
@@ -155,10 +148,8 @@ impl<R: BufRead> Parser<R> {
     #[inline]
     pub fn new(input: R) -> Self {
         Parser {
-            input: UnsafeCell::new(Input::new(input)),
-            command_buf: Vec::new(),
-            cursor: Span::from(0..0),
-            message_buf: Vec::new(),
+            input: BufInput::new(input),
+            message_buf: UnsafeCell::new(Vec::new()),
             data_opened: AtomicBool::new(false),
             data_state: UnsafeCell::new(DataState::new()),
         }
@@ -174,46 +165,46 @@ impl<R: BufRead> Parser<R> {
         // Read the previous data stream, if the user didn't. Error if the user
         // only partially read the data stream.
         if !self.data_state.get_mut().finished() {
+            // TODO: Allow unfinished length-0 data streams and skip the
+            // optional LF here.
             if self.data_opened.load(Ordering::Acquire) {
                 return Err(DataReaderError::Unfinished.into());
             }
-            self.input
-                .get_mut()
-                .skip_data(self.data_state.get_mut(), &self.command_buf)?;
+            self.input.skip_data(self.data_state.get_mut())?;
         }
 
-        self.command_buf.clear();
-        self.bump_command()?;
+        self.input.truncate_context();
+        let Some(line) = self.input.next_command()? else {
+            return Ok(Command::Done(Done::Eof));
+        };
 
-        if self.input.get_mut().eof() {
-            Ok(Command::Done(Done::Eof))
-        } else if self.eat_if_equals(b"blob") {
+        if line == b"blob" {
             self.parse_blob()
-        } else if self.eat_prefix(b"commit ") {
-            self.parse_commit()
-        } else if self.eat_prefix(b"tag ") {
-            self.parse_tag()
-        } else if self.eat_prefix(b"reset ") {
-            self.parse_reset()
-        } else if self.eat_prefix(b"ls ") {
-            self.parse_ls()
-        } else if self.eat_prefix(b"cat-blob ") {
-            self.parse_cat_blob()
-        } else if self.eat_prefix(b"get-mark ") {
-            self.parse_get_mark()
-        } else if self.eat_if_equals(b"checkpoint") {
+        } else if let Some(branch) = line.strip_prefix(b"commit ") {
+            self.parse_commit(branch)
+        } else if let Some(name) = line.strip_prefix(b"tag ") {
+            self.parse_tag(name)
+        } else if let Some(branch) = line.strip_prefix(b"reset ") {
+            self.parse_reset(branch)
+        } else if let Some(args) = line.strip_prefix(b"ls ") {
+            self.parse_ls(args)
+        } else if let Some(data_ref) = line.strip_prefix(b"cat-blob ") {
+            self.parse_cat_blob(data_ref)
+        } else if let Some(mark) = line.strip_prefix(b"get-mark ") {
+            self.parse_get_mark(mark)
+        } else if line == b"checkpoint" {
             self.parse_checkpoint()
-        } else if self.eat_if_equals(b"done") {
+        } else if line == b"done" {
             Ok(Command::Done(Done::Explicit))
-        } else if self.eat_if_equals(b"alias") {
+        } else if line == b"alias" {
             self.parse_alias()
-        } else if self.eat_prefix(b"progress ") {
-            self.parse_progress()
-        } else if self.eat_prefix(b"feature ") {
-            self.parse_feature()
-        } else if self.eat_prefix(b"option ") {
-            self.parse_option()
-        } else if self.line_remaining().is_empty() {
+        } else if let Some(message) = line.strip_prefix(b"progress ") {
+            self.parse_progress(message)
+        } else if let Some(feature) = line.strip_prefix(b"feature ") {
+            self.parse_feature(feature)
+        } else if let Some(option) = line.strip_prefix(b"option ") {
+            self.parse_option(option)
+        } else if line == b"" {
             Err(ParseError::UnexpectedBlank.into())
         } else {
             Err(ParseError::UnsupportedCommand.into())
@@ -221,24 +212,25 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_new_blob` in fast-import.c.
-    fn parse_blob(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        self.bump_command()?;
+    fn parse_blob(&self) -> PResult<Command<'_, &[u8], R>> {
         let mark = self.parse_mark()?;
         let original_oid = self.parse_original_oid()?;
         let data_header = self.parse_data_header()?;
 
-        let blob = Blob {
+        let data_state = unsafe { &mut *self.data_state.get() };
+        data_state.init(&data_header, &self.data_opened);
+
+        Ok(Command::Blob(Blob {
             mark,
             original_oid,
             data_header,
             parser: self,
-        };
-        Ok(Command::Blob(slice(blob, self)))
+        }))
     }
 
     // Corresponds to `parse_new_commit` in fast-import.c.
-    fn parse_commit(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        let branch = self.parse_branch()?;
+    fn parse_commit<'a>(&'a self, branch: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
+        let branch = Branch::parse(branch)?;
         let mark = self.parse_mark()?;
         let original_oid = self.parse_original_oid()?;
         let author = self.parse_person_ident(b"author ")?;
@@ -246,96 +238,159 @@ impl<R: BufRead> Parser<R> {
             .parse_person_ident(b"committer ")?
             .ok_or(ParseError::ExpectedCommitter)?;
         let encoding = self.parse_encoding()?;
-        self.parse_data_small()?;
-        self.bump_command()?;
+        let message = self.parse_data_small()?;
         let from = self.parse_from()?;
         let merge = self.parse_merge()?;
 
-        let commit = Commit {
+        Ok(Command::Commit(Commit {
             branch,
             mark,
             original_oid,
             author,
             committer,
             encoding,
-            message: Span::from(0..0),
+            message,
             from,
             merge,
             // TODO
-        };
-        let mut commit = slice(commit, self);
-        commit.message = &self.message_buf;
-        Ok(Command::Commit(commit))
+        }))
     }
 
     // Corresponds to `parse_new_tag` in fast-import.c.
-    fn parse_tag(&mut self) -> PResult<Command<'_, &[u8], R>> {
+    fn parse_tag<'a>(&'a self, _name: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_reset_branch` in fast-import.c.
-    fn parse_reset(&mut self) -> PResult<Command<'_, &[u8], R>> {
+    fn parse_reset<'a>(&'a self, _branch: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_ls` in fast-import.c.
-    fn parse_ls(&mut self) -> PResult<Command<'_, &[u8], R>> {
+    fn parse_ls<'a>(&'a self, _args: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_cat_blob` in fast-import.c.
-    fn parse_cat_blob(&mut self) -> PResult<Command<'_, &[u8], R>> {
+    fn parse_cat_blob<'a>(&'a self, _data_ref: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_get_mark` in fast-import.c.
-    fn parse_get_mark(&mut self) -> PResult<Command<'_, &[u8], R>> {
+    fn parse_get_mark<'a>(&'a self, _mark: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_checkpoint` in fast-import.c.
-    fn parse_checkpoint(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        self.skip_optional_lf();
+    fn parse_checkpoint(&self) -> PResult<Command<'_, &[u8], R>> {
+        self.input.skip_optional_lf()?;
         Ok(Command::Checkpoint)
     }
 
     // Corresponds to `parse_alias` in fast-import.c.
-    fn parse_alias(&mut self) -> PResult<Command<'_, &[u8], R>> {
+    fn parse_alias(&self) -> PResult<Command<'_, &[u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_progress` in fast-import.c.
-    fn parse_progress(&mut self) -> PResult<Command<'_, &[u8], R>> {
-        self.skip_optional_lf();
-        Ok(Command::Progress(Progress {
-            message: self.line_remaining(),
-        }))
+    fn parse_progress<'a>(&'a self, message: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
+        self.input.skip_optional_lf()?;
+        Ok(Command::Progress(Progress { message }))
     }
 
     // Corresponds to `parse_feature` in fast-import.c.
-    fn parse_feature(&mut self) -> PResult<Command<'_, &[u8], R>> {
+    fn parse_feature<'a>(&'a self, _feature: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         todo!()
     }
 
     // Corresponds to `parse_option` in fast-import.c.
-    fn parse_option(&mut self) -> PResult<Command<'_, &[u8], R>> {
+    fn parse_option<'a>(&'a self, _option: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         todo!()
     }
 
-    /// Returns an error when the branch name is invalid.
+    // Corresponds to `parse_mark` in fast-import.c.
+    fn parse_mark(&self) -> PResult<Option<Mark>> {
+        self.input.parse_if_prefix(b"mark ", Mark::parse)
+    }
+
+    // Corresponds to `parse_original_identifier` in fast-import.c.
+    fn parse_original_oid(&self) -> PResult<Option<OriginalOid<&[u8]>>> {
+        self.input
+            .parse_if_prefix(b"original-oid ", OriginalOid::parse)
+    }
+
+    // Corresponds to `parse_from` in fast-import.c.
+    fn parse_from(&self) -> PResult<Option<Commitish<&[u8]>>> {
+        self.input.parse_if_prefix(b"from ", Commitish::parse)
+    }
+
+    // Corresponds to `parse_merge` in fast-import.c.
+    fn parse_merge(&self) -> PResult<Vec<Commitish<&[u8]>>> {
+        self.input.parse_if_prefix_many(b"merge ", Commitish::parse)
+    }
+
+    // Corresponds to `parse_ident` in fast-import.c.
+    fn parse_person_ident(&self, prefix: &[u8]) -> PResult<Option<PersonIdent<&[u8]>>> {
+        self.input.parse_if_prefix(prefix, PersonIdent::parse)
+    }
+
+    // Corresponds to part of `parse_new_commit` in fast-import.c.
+    fn parse_encoding(&self) -> PResult<Option<Encoding<&[u8]>>> {
+        self.input.parse_if_prefix(b"encoding ", Encoding::parse)
+    }
+
+    // Corresponds to `parse_and_store_blob` in fast-import.c.
+    fn parse_data_header(&self) -> PResult<DataHeader<&[u8]>> {
+        self.input
+            .parse_if_prefix(b"data ", DataHeader::parse)?
+            .ok_or(ParseError::ExpectedDataCommand.into())
+    }
+
+    /// Parses a `data` command and reads its contents into memory. git
+    /// fast-import reads commit and tag messages into memory with no size
+    /// limit.
     ///
+    // Corresponds to `parse_data` in fast-import.c.
+    fn parse_data_small(&self) -> PResult<&[u8]> {
+        let header = self.parse_data_header()?;
+        let message_buf = unsafe { &mut *self.message_buf.get() };
+        message_buf.clear();
+        self.input.read_data_to_end(header, message_buf)?;
+        Ok(message_buf)
+    }
+}
+
+impl From<io::ErrorKind> for StreamError {
+    #[inline]
+    fn from(kind: io::ErrorKind) -> Self {
+        StreamError::Io(kind.into())
+    }
+}
+
+impl From<StreamError> for io::Error {
+    #[inline]
+    fn from(err: StreamError) -> Self {
+        match err {
+            StreamError::Parse(err) => io::Error::new(io::ErrorKind::InvalidData, err),
+            StreamError::DataReader(err) => io::Error::new(io::ErrorKind::Other, err),
+            StreamError::Io(err) => err,
+        }
+    }
+}
+
+impl<'a> Branch<&'a [u8]> {
     // Corresponds to `lookup_branch` and `new_branch` in fast-import.c.
-    fn parse_branch(&mut self) -> PResult<Branch<Span>> {
-        let branch = self.cursor;
-        if branch.slice(self).contains(&b'\0') {
+    fn parse(branch: &'a [u8]) -> PResult<Self> {
+        if branch.contains(&b'\0') {
             return Err(ParseError::BranchContainsNul.into());
         }
         // The git-specific validation of `new_branch` is handled outside by
         // `Branch::validate_git`, so the user can use this for any VCS.
-        self.bump_command()?;
         Ok(Branch { branch })
     }
+}
 
+impl Mark {
     /// # Differences from fast-import
     ///
     /// `mark :0` is rejected here, but not by fast-import.
@@ -343,57 +398,42 @@ impl<R: BufRead> Parser<R> {
     /// filter-repo does not check any errors for this integer. It allows `+`
     /// sign, parse errors, empty digits, and junk after the integer.
     ///
-    // Corresponds to `parse_mark` in fast-import.c.
-    fn parse_mark(&mut self) -> PResult<Option<Mark>> {
-        if self.eat_prefix(b"mark ") {
-            let mark = self.cursor;
-            self.bump_command()?;
-            Mark::parse(mark.slice(self)).map(Some)
-        } else {
-            Ok(None)
-        }
+    // Corresponds to `parse_mark` and `parse_mark_ref` in fast-import.c.
+    #[inline]
+    fn parse(mark: &[u8]) -> PResult<Self> {
+        let [b':', mark @ ..] = mark else {
+            return Err(ParseError::MarkMissingColon.into());
+        };
+        let mark = parse_u64(mark).ok_or(ParseError::InvalidMark)?;
+        let mark = Mark::new(mark).ok_or(ParseError::ZeroMark)?;
+        Ok(mark)
     }
+}
 
+impl<'a> OriginalOid<&'a [u8]> {
     // Corresponds to `parse_original_identifier` in fast-import.c.
-    fn parse_original_oid(&mut self) -> PResult<Option<OriginalOid<Span>>> {
-        if self.eat_prefix(b"original-oid ") {
-            let original_oid = self.cursor;
-            self.bump_command()?;
-            Ok(Some(OriginalOid { oid: original_oid }))
+    #[inline]
+    fn parse(original_oid: &'a [u8]) -> PResult<Self> {
+        Ok(OriginalOid { oid: original_oid })
+    }
+}
+
+impl<'a> Commitish<&'a [u8]> {
+    // Corresponds to `parse_objectish` and `parse_merge` in fast-import.c.
+    fn parse(commitish: &'a [u8]) -> PResult<Self> {
+        // TODO: How much of `parse_objectish` should be here or in the
+        // front-end?
+        if commitish.starts_with(b":") {
+            Mark::parse(commitish).map(Commitish::Mark)
         } else {
-            Ok(None)
+            Ok(Commitish::BranchOrOid(commitish))
         }
     }
+}
 
-    // Corresponds to `parse_from` in fast-import.c.
-    fn parse_from(&mut self) -> PResult<Option<Commitish<Span>>> {
-        if self.eat_prefix(b"from ") {
-            let commitish = self.cursor;
-            self.bump_command()?;
-            Commitish::parse(commitish, self).map(Some)
-        } else {
-            Ok(None)
-        }
-    }
-
-    // Corresponds to `parse_merge` in fast-import.c.
-    fn parse_merge(&mut self) -> PResult<Vec<Commitish<Span>>> {
-        let mut merge = Vec::new();
-        while self.eat_prefix(b"merge ") {
-            let commitish = self.cursor;
-            self.bump_command()?;
-            merge.push(Commitish::parse(commitish, self)?);
-        }
-        Ok(merge)
-    }
-
+impl<'a> PersonIdent<&'a [u8]> {
     // Corresponds to `parse_ident` in fast-import.c.
-    fn parse_person_ident(&mut self, prefix: &[u8]) -> PResult<Option<PersonIdent<Span>>> {
-        if !self.eat_prefix(prefix) {
-            return Ok(None);
-        }
-        let cursor = self.cursor;
-        let ident = cursor.slice(self);
+    fn parse(ident: &'a [u8]) -> PResult<Self> {
         // NUL may not appear in the name or email due to using `strcspn`.
         if ident.contains(&b'\0') {
             return Err(ParseError::IdentContainsNul.into());
@@ -427,179 +467,39 @@ impl<R: BufRead> Parser<R> {
 
         // TODO: Parse dates
 
-        self.bump_command()?;
-
-        let lt = cursor.start + lt;
-        let gt = cursor.start + gt;
-        Ok(Some(PersonIdent {
-            name: Span::from(cursor.start..(lt - 2).max(cursor.start)),
-            email: Span::from(lt + 1..gt - 1),
-            date: Span::from((gt + 2).min(cursor.end)..cursor.end),
-        }))
+        Ok(PersonIdent {
+            name: &ident[..lt.saturating_sub(2)],
+            email: &ident[lt + 1..gt - 1],
+            date: &ident[(gt + 2).min(ident.len())..],
+        })
     }
+}
 
+impl<'a> Encoding<&'a [u8]> {
     // Corresponds to part of `parse_new_commit` in fast-import.c.
-    fn parse_encoding(&mut self) -> PResult<Option<Encoding<Span>>> {
-        if self.eat_prefix(b"encoding ") {
-            let encoding = self.cursor;
-            self.bump_command()?;
-            Ok(Some(Encoding { encoding }))
-        } else {
-            Ok(None)
-        }
+    #[inline(always)]
+    fn parse(encoding: &'a [u8]) -> PResult<Self> {
+        Ok(Encoding { encoding })
     }
+}
 
+impl<'a> DataHeader<&'a [u8]> {
     /// Parses a `data` command, but does not read its contents. git fast-import
     /// reads blobs into memory or switches to streaming when they exceed
     /// `--big-file-threshold` (default 512MiB).
     ///
     // Corresponds to `parse_and_store_blob` in fast-import.c.
-    fn parse_data_header(&mut self) -> PResult<DataHeader<Span>> {
-        if !self.eat_prefix(b"data ") {
-            return Err(ParseError::ExpectedDataCommand.into());
-        }
-        let header = if self.eat_prefix(b"<<") {
-            let delim = self.cursor;
-            if delim.is_empty() {
+    fn parse(arg: &'a [u8]) -> PResult<Self> {
+        if let Some(delim) = arg.strip_prefix(b"<<") {
+            if delim == b"" {
                 return Err(ParseError::EmptyDelim.into());
-            } else if delim.slice(self).contains(&b'\0') {
+            } else if delim.contains(&b'\0') {
                 return Err(ParseError::DataDelimContainsNul.into());
             }
-            DataHeader::Delimited { delim }
+            Ok(DataHeader::Delimited { delim })
         } else {
-            let len = parse_u64(self.line_remaining()).ok_or(ParseError::InvalidDataLength)?;
-            DataHeader::Counted { len }
-        };
-        self.data_state
-            .get_mut()
-            .set(header.clone(), &mut self.data_opened);
-        self.skip_optional_lf();
-        Ok(header)
-    }
-
-    /// Parses a `data` command and reads its contents into memory. git
-    /// fast-import reads commit and tag messages into memory with no size
-    /// limit.
-    ///
-    // Corresponds to `parse_data` in fast-import.c.
-    fn parse_data_small(&mut self) -> PResult<usize> {
-        let header = self.parse_data_header()?;
-        self.message_buf.clear();
-        self.input
-            .get_mut()
-            .read_data_to_end(&mut self.message_buf, header, &self.command_buf)
-    }
-
-    /// Reads a line from input into `self.line_buf`, stripping the LF delimiter
-    /// and skipping any comment lines that start with `#`. Lines may contain
-    /// any bytes (including NUL), except for LF.
-    fn bump_command(&mut self) -> io::Result<()> {
-        self.input
-            .get_mut()
-            .read_command(&mut self.command_buf, &mut self.cursor)
-    }
-
-    /// Returns the remainder of the line at the cursor.
-    #[inline(always)]
-    fn line_remaining(&self) -> &[u8] {
-        self.cursor.slice(self)
-    }
-
-    /// Consumes text at the cursor on the current line, if it matches the
-    /// prefix, and returns whether the cursor was bumped.
-    ///
-    // Corresponds to `skip_prefix` in git-compat-util.c
-    #[inline(always)]
-    fn eat_prefix(&mut self, prefix: &[u8]) -> bool {
-        if self.line_remaining().starts_with(prefix) {
-            self.cursor.start += prefix.len();
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Consumes the remainder of the current line, if it matches the bytes, and
-    /// returns whether the cursor was bumped.
-    #[inline(always)]
-    fn eat_if_equals(&mut self, b: &[u8]) -> bool {
-        if self.line_remaining() == b {
-            self.cursor.start = self.cursor.end;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Skips a trailing LF, if one exists, before reading the following
-    /// command.
-    #[inline(always)]
-    fn skip_optional_lf(&mut self) {
-        self.input.get_mut().skip_optional_lf();
-    }
-}
-
-impl<R: Debug> Debug for Parser<R> {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Parser")
-            .field("input", &self.input)
-            .field("command_buf", &self.command_buf.as_bstr())
-            .field("cursor", &self.cursor)
-            .field("message_buf", &self.message_buf.as_bstr())
-            .field("data_opened", &self.data_opened)
-            .field("data_state", &self.data_state)
-            .finish()
-    }
-}
-
-impl From<io::ErrorKind> for StreamError {
-    #[inline]
-    fn from(kind: io::ErrorKind) -> Self {
-        StreamError::Io(kind.into())
-    }
-}
-
-impl From<StreamError> for io::Error {
-    #[inline]
-    fn from(err: StreamError) -> Self {
-        match err {
-            StreamError::Parse(err) => io::Error::new(io::ErrorKind::InvalidData, err),
-            StreamError::DataReader(err) => io::Error::new(io::ErrorKind::Other, err),
-            StreamError::Io(err) => err,
-        }
-    }
-}
-
-impl<'a, R> Sliceable<'a> for Parser<R> {
-    #[inline(always)]
-    fn as_slice(&'a self) -> &'a [u8] {
-        &self.command_buf
-    }
-}
-
-impl Mark {
-    // Corresponds to `parse_mark_ref` in fast-import.c.
-    #[inline]
-    fn parse(mark: &[u8]) -> PResult<Self> {
-        let [b':', mark @ ..] = mark else {
-            return Err(ParseError::MarkMissingColon.into());
-        };
-        let mark = parse_u64(mark).ok_or(ParseError::InvalidMark)?;
-        let mark = Mark::new(mark).ok_or(ParseError::ZeroMark)?;
-        Ok(mark)
-    }
-}
-
-impl Commitish<Span> {
-    // Corresponds to `parse_objectish` and `parse_merge` in fast-import.c.
-    fn parse<R: BufRead>(commitish: Span, parser: &Parser<R>) -> PResult<Self> {
-        // TODO: How much of `parse_objectish` should be here or in the
-        // front-end?
-        let commitish_bytes = commitish.slice(parser);
-        if commitish_bytes.starts_with(b":") {
-            Mark::parse(commitish_bytes).map(Commitish::Mark)
-        } else {
-            Ok(Commitish::BranchOrOid(commitish))
+            let len = parse_u64(arg).ok_or(ParseError::InvalidDataLength)?;
+            Ok(DataHeader::Counted { len })
         }
     }
 }

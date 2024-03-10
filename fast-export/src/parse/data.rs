@@ -12,12 +12,13 @@ use thiserror::Error;
 
 use crate::{
     command::DataHeader,
-    parse::{PResult, Parser, Span},
+    parse::{BufInput, PResult, Parser},
 };
 
 /// An exclusive handle for reading the current data stream.
 pub struct DataReader<'a, R> {
-    parser: &'a Parser<R>,
+    input: &'a BufInput<R>,
+    data_state: &'a mut DataState,
 }
 
 /// The state for reading a data stream. `Parser::data_opened` ensures only one
@@ -26,14 +27,20 @@ pub struct DataReader<'a, R> {
 /// stream can be skipped when the caller does not finish reading it.
 #[derive(Debug)]
 pub(super) struct DataState {
-    /// The header information for the data stream.
-    pub(super) header: DataHeader<Span>,
     /// Whether the data stream has been read to completion.
     pub(super) finished: bool,
     /// Whether the data reader has been closed.
     pub(super) closed: bool,
+    /// Whether the data stream is counted or delimited.
+    pub(super) is_counted: bool,
     /// The number of bytes read from the data stream.
     pub(super) len_read: u64,
+
+    /// The total number of bytes for counted data.
+    pub(super) len: u64,
+
+    /// The delimiter for delimited data.
+    pub(super) delim: Vec<u8>,
     /// A buffer for reading lines in delimited data.
     pub(super) line_buf: Vec<u8>,
     /// The offset into `line_buf`, at which reading begins.
@@ -63,7 +70,14 @@ impl<'a, R: BufRead> DataReader<'a, R> {
     pub(crate) fn open(parser: &'a Parser<R>) -> PResult<DataReader<'a, R>> {
         // Check that `data_opened` was previously false and set it to true.
         if !parser.data_opened.swap(true, Ordering::Acquire) {
-            Ok(DataReader { parser })
+            // SAFETY: We have exclusive access now, because we are in the
+            // single instance of `DataReader`. See the invariants in
+            // `Parser::input`.
+            let data_state = unsafe { &mut *parser.data_state.get() };
+            Ok(DataReader {
+                input: &parser.input,
+                data_state,
+            })
         } else {
             Err(DataReaderError::AlreadyOpened.into())
         }
@@ -73,17 +87,7 @@ impl<'a, R: BufRead> DataReader<'a, R> {
     /// [`DataReader::read`], but returns [`ParseError`](super::ParseError).
     #[inline]
     pub fn read_next(&mut self, buf: &mut [u8]) -> PResult<usize> {
-        // SAFETY: We have exclusive mutable access to all of the `UnsafeCell`
-        // fields, because we are in the single instance of `DataReader`, and
-        // its construction was guarded by `DataState::reading_data`. See the
-        // invariants in `Parser::input`.
-        let (input, data_state) = unsafe {
-            (
-                &mut *self.parser.input.get(),
-                &mut *self.parser.data_state.get(),
-            )
-        };
-        input.read_data(buf, data_state, &self.parser.command_buf)
+        self.input.read_data(buf, self.data_state)
     }
 
     /// Skips reading the rest of the data stream and returns the number of
@@ -98,26 +102,17 @@ impl<'a, R: BufRead> DataReader<'a, R> {
     /// does not need to all fit in memory at once.
     #[inline]
     pub fn skip_rest(&mut self) -> PResult<u64> {
-        // SAFETY: See `DataReader::read_next`.
-        let (input, data_state) = unsafe {
-            (
-                &mut *self.parser.input.get(),
-                &mut *self.parser.data_state.get(),
-            )
-        };
-        input.skip_data(data_state, &self.parser.command_buf)
+        self.input.skip_data(self.data_state)
     }
 
     /// Closes the data stream and returns an error when it was not read to
     /// completion.
     #[inline]
     pub fn close(&mut self) -> PResult<()> {
-        // SAFETY: See `DataReader::read_next`.
-        let data_state = unsafe { &mut *self.parser.data_state.get() };
-        if data_state.closed {
+        if self.data_state.closed {
             Err(DataReaderError::Closed.into())
-        } else if data_state.finished {
-            data_state.closed = true;
+        } else if self.data_state.finished {
+            self.data_state.closed = true;
             Ok(())
         } else {
             Err(DataReaderError::Unfinished.into())
@@ -127,17 +122,13 @@ impl<'a, R: BufRead> DataReader<'a, R> {
     /// Returns the number of bytes read from the data stream.
     #[inline]
     pub fn len_read(&self) -> u64 {
-        // SAFETY: See `DataReader::read_next`.
-        let data_state = unsafe { &*self.parser.data_state.get() };
-        data_state.len_read
+        self.data_state.len_read
     }
 
     /// Returns whether the data stream has been read to completion.
     #[inline]
     pub fn finished(&self) -> bool {
-        // SAFETY: See `DataReader::read_next`.
-        let data_state = unsafe { &*self.parser.data_state.get() };
-        data_state.finished
+        self.data_state.finished
     }
 }
 
@@ -151,44 +142,61 @@ impl<R: BufRead> Read for DataReader<'_, R> {
 
     #[inline]
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        // SAFETY: See `DataReader::read_next`.
-        let (input, data_state) = unsafe {
-            (
-                &mut *self.parser.input.get(),
-                &mut *self.parser.data_state.get(),
-            )
-        };
-        let n = input.read_data_to_end(buf, data_state.header.clone(), &self.parser.command_buf)?;
-        data_state.finished = true;
-        data_state.len_read += n as u64;
+        let n = self
+            .input
+            .read_data_to_end(self.data_state.as_header(), buf)?;
+        self.data_state.finished = true;
+        self.data_state.len_read += n as u64;
         Ok(n)
     }
 }
 
 impl DataState {
     #[inline(always)]
-    pub(super) fn new() -> Self {
+    pub fn new() -> Self {
         DataState {
-            header: DataHeader::Counted { len: 0 },
             finished: false,
             closed: false,
+            is_counted: false,
             len_read: 0,
+            len: 0,
+            delim: Vec::new(),
             line_buf: Vec::new(),
             line_offset: 0,
         }
     }
 
     #[inline(always)]
-    pub(super) fn set(&mut self, header: DataHeader<Span>, data_opened: &mut AtomicBool) {
+    pub fn init(&mut self, header: &DataHeader<&[u8]>, data_opened: &AtomicBool) {
         data_opened.store(false, Ordering::Release);
-        self.finished = matches!(header, DataHeader::Counted { len: 0 });
+        self.finished = false;
         self.closed = false;
         self.len_read = 0;
-        self.header = header;
+        match *header {
+            DataHeader::Counted { len } => {
+                self.is_counted = true;
+                self.len = len;
+            }
+            DataHeader::Delimited { delim } => {
+                self.is_counted = false;
+                delim.clone_into(&mut self.delim);
+                self.line_buf.clear();
+                self.line_offset = 0;
+            }
+        }
     }
 
     #[inline(always)]
-    pub(super) fn finished(&self) -> bool {
+    pub fn as_header(&self) -> DataHeader<&[u8]> {
+        if self.is_counted {
+            DataHeader::Counted { len: self.len }
+        } else {
+            DataHeader::Delimited { delim: &self.delim }
+        }
+    }
+
+    #[inline(always)]
+    pub fn finished(&self) -> bool {
         self.finished
     }
 }
