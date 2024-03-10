@@ -215,7 +215,7 @@ impl<R: BufRead> BufInput<R> {
     /// (including NUL), except for LF.
     ///
     // Corresponds to `read_next_command` in fast-import.c.
-    fn read_command(&self) -> io::Result<Option<&[u8]>> {
+    fn read_directive(&self) -> io::Result<Option<&[u8]>> {
         let input = unsafe { &mut *self.input.get() };
         while !input.eof() {
             let line_buf = self.lines.push_back();
@@ -227,15 +227,15 @@ impl<R: BufRead> BufInput<R> {
         Ok(None)
     }
 
-    /// Reads the next command and consumes it.
-    pub fn next_command(&self) -> io::Result<Option<&[u8]>> {
-        let command = self.peek_command()?;
-        self.bump_command();
-        Ok(command)
+    /// Reads the next directive and consumes it.
+    pub fn next_directive(&self) -> io::Result<Option<&[u8]>> {
+        let directive = self.peek_directive()?;
+        self.bump_directive();
+        Ok(directive)
     }
 
-    /// Reads the next command without consuming it.
-    pub fn peek_command(&self) -> io::Result<Option<&[u8]>> {
+    /// Reads the next directive without consuming it.
+    pub fn peek_directive(&self) -> io::Result<Option<&[u8]>> {
         let unread = unsafe { &mut *self.unread.get() };
         if *unread {
             let back = self.lines.back();
@@ -243,28 +243,28 @@ impl<R: BufRead> BufInput<R> {
             Ok(back)
         } else {
             *unread = true;
-            self.read_command()
+            self.read_directive()
         }
     }
 
-    /// Consumes the peeked command. `bump_command` must be preceded by
-    /// `peek_command`.
+    /// Consumes the peeked directive. `bump_directive` must be preceded by
+    /// `peek_directive`.
     #[inline(always)]
-    pub fn bump_command(&self) {
+    pub fn bump_directive(&self) {
         let unread = unsafe { &mut *self.unread.get() };
-        debug_assert!(*unread, "bump_command not preceded by peek_command");
+        debug_assert!(*unread, "bump_directive not preceded by peek_directive");
         *unread = false;
     }
 
     #[inline(always)]
-    pub fn parse_if_prefix<'a, F, T>(&'a self, prefix: &[u8], parse: F) -> PResult<Option<T>>
+    pub fn parse_directive<'a, F, T>(&'a self, prefix: &[u8], parse: F) -> PResult<Option<T>>
     where
         F: FnOnce(&'a [u8]) -> PResult<T>,
         T: 'a,
     {
-        let line = self.peek_command()?;
+        let line = self.peek_directive()?;
         if let Some(arg) = line.and_then(|line| line.strip_prefix(prefix)) {
-            self.bump_command();
+            self.bump_directive();
             parse(arg).map(Some)
         } else {
             Ok(None)
@@ -272,13 +272,13 @@ impl<R: BufRead> BufInput<R> {
     }
 
     #[inline(always)]
-    pub fn parse_if_prefix_many<'a, F, T>(&'a self, prefix: &[u8], mut parse: F) -> PResult<Vec<T>>
+    pub fn parse_directive_many<'a, F, T>(&'a self, prefix: &[u8], mut parse: F) -> PResult<Vec<T>>
     where
         F: FnMut(&'a [u8]) -> PResult<T>,
         T: 'a,
     {
         let mut directives = Vec::new();
-        while let Some(directive) = self.parse_if_prefix(prefix, &mut parse)? {
+        while let Some(directive) = self.parse_directive(prefix, &mut parse)? {
             directives.push(directive);
         }
         Ok(directives)
@@ -314,8 +314,8 @@ impl<R: BufRead> BufInput<R> {
 
     /// Skips a trailing LF, if one exists, before reading the next directive.
     pub fn skip_optional_lf(&self) -> PResult<()> {
-        if self.peek_command()? == Some(b"") {
-            self.bump_command();
+        if self.peek_directive()? == Some(b"") {
+            self.bump_directive();
         }
         Ok(())
     }

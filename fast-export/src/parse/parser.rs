@@ -174,7 +174,7 @@ impl<R: BufRead> Parser<R> {
         }
 
         self.input.truncate_context();
-        let Some(line) = self.input.next_command()? else {
+        let Some(line) = self.input.next_directive()? else {
             return Ok(Command::Done(Done::Eof));
         };
 
@@ -310,39 +310,39 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_mark` in fast-import.c.
     fn parse_mark(&self) -> PResult<Option<Mark>> {
-        self.input.parse_if_prefix(b"mark ", Mark::parse)
+        self.input.parse_directive(b"mark ", Mark::parse)
     }
 
     // Corresponds to `parse_original_identifier` in fast-import.c.
     fn parse_original_oid(&self) -> PResult<Option<OriginalOid<&[u8]>>> {
         self.input
-            .parse_if_prefix(b"original-oid ", OriginalOid::parse)
+            .parse_directive(b"original-oid ", OriginalOid::parse)
     }
 
     // Corresponds to `parse_from` in fast-import.c.
     fn parse_from(&self) -> PResult<Option<Commitish<&[u8]>>> {
-        self.input.parse_if_prefix(b"from ", Commitish::parse)
+        self.input.parse_directive(b"from ", Commitish::parse)
     }
 
     // Corresponds to `parse_merge` in fast-import.c.
     fn parse_merge(&self) -> PResult<Vec<Commitish<&[u8]>>> {
-        self.input.parse_if_prefix_many(b"merge ", Commitish::parse)
+        self.input.parse_directive_many(b"merge ", Commitish::parse)
     }
 
     // Corresponds to `parse_ident` in fast-import.c.
     fn parse_person_ident(&self, prefix: &[u8]) -> PResult<Option<PersonIdent<&[u8]>>> {
-        self.input.parse_if_prefix(prefix, PersonIdent::parse)
+        self.input.parse_directive(prefix, PersonIdent::parse)
     }
 
     // Corresponds to part of `parse_new_commit` in fast-import.c.
     fn parse_encoding(&self) -> PResult<Option<Encoding<&[u8]>>> {
-        self.input.parse_if_prefix(b"encoding ", Encoding::parse)
+        self.input.parse_directive(b"encoding ", Encoding::parse)
     }
 
     // Corresponds to `parse_and_store_blob` in fast-import.c.
     fn parse_data_header(&self) -> PResult<DataHeader<&[u8]>> {
         self.input
-            .parse_if_prefix(b"data ", DataHeader::parse)?
+            .parse_directive(b"data ", DataHeader::parse)?
             .ok_or(ParseError::ExpectedDataCommand.into())
     }
 
