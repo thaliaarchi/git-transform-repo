@@ -147,3 +147,21 @@ impl Debug for BufPool {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example() {
+        let mut pool = BufPool::new();
+        b"1"[..].clone_into(pool.push_back());
+        b"2"[..].clone_into(pool.push_back());
+        b"3"[..].clone_into(pool.push_back());
+        pool.truncate_back(2);
+        let buf = pool.push_back();
+        assert!(buf.capacity() >= 1);
+        b"4"[..].clone_into(buf);
+        assert_eq!(pool.iter().collect::<Vec<_>>(), [b"2", b"3", b"4"]);
+    }
+}

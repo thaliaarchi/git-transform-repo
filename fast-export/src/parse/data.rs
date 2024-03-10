@@ -155,8 +155,8 @@ impl DataState {
     #[inline(always)]
     pub fn new() -> Self {
         DataState {
-            finished: false,
-            closed: false,
+            finished: true,
+            closed: true,
             is_counted: false,
             len_read: 0,
             len: 0,
@@ -226,8 +226,12 @@ mod tests {
             $(
                 #[test]
                 fn [<parse_ $data_kind _blob_ $mode>]() {
-                    [<parse_ $data_kind _blob>](Mode::$ModeVariant, true);
                     [<parse_ $data_kind _blob>](Mode::$ModeVariant, false);
+                }
+
+                #[test]
+                fn [<parse_ $data_kind _blob_ $mode _optional_lf>]() {
+                    [<parse_ $data_kind _blob>](Mode::$ModeVariant, true);
                 }
             )+
         }

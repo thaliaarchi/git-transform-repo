@@ -26,6 +26,7 @@ pub(super) struct Input<R> {
 pub(super) struct BufInput<R> {
     input: UnsafeCell<Input<R>>,
     lines: BufPool,
+    /// Whether the last command has been consumed.
     unread: UnsafeCell<bool>,
 }
 
@@ -242,8 +243,9 @@ impl<R: BufRead> BufInput<R> {
             debug_assert!(back.is_some(), "unread line not in BufPool");
             Ok(back)
         } else {
-            *unread = true;
-            self.read_directive()
+            let line = self.read_directive()?;
+            *unread = line.is_some();
+            Ok(line)
         }
     }
 
@@ -252,7 +254,12 @@ impl<R: BufRead> BufInput<R> {
     #[inline(always)]
     pub fn bump_directive(&self) {
         let unread = unsafe { &mut *self.unread.get() };
-        debug_assert!(*unread, "bump_directive not preceded by peek_directive");
+        #[cfg(debug_assertions)]
+        let input = unsafe { &*self.input.get() };
+        debug_assert!(
+            *unread || input.eof,
+            "bump_directive not preceded by peek_directive",
+        );
         *unread = false;
     }
 
