@@ -76,6 +76,7 @@ impl<R: BufRead> Input<R> {
             return Err(ParseError::DataUnexpectedEof.into());
         }
         debug_assert!(n as u64 == len, "misbehaving Take implementation");
+        self.skip_optional_lf()?;
         Ok(n)
     }
 
@@ -93,6 +94,7 @@ impl<R: BufRead> Input<R> {
             };
             if line == delim {
                 buf.truncate(len);
+                self.skip_optional_lf()?;
                 return Ok(len - start);
             }
         }
@@ -119,6 +121,7 @@ impl<R: BufRead> Input<R> {
             if s.len_read >= s.len {
                 debug_assert!(s.len_read == s.len, "read too many bytes");
                 s.finished = true;
+                self.skip_optional_lf()?;
             }
             self.line += count_lf(&buf[..n]);
             Ok(n)
@@ -134,6 +137,7 @@ impl<R: BufRead> Input<R> {
                 };
                 if line == s.delim {
                     s.finished = true;
+                    self.skip_optional_lf()?;
                     return Ok(0);
                 }
                 if s.line_buf.is_empty() {
@@ -190,7 +194,20 @@ impl<R: BufRead> Input<R> {
             }
         }
         s.finished = true;
+        self.skip_optional_lf()?;
         Ok(s.len_read - start_len)
+    }
+
+    /// Skips a trailing LF, if one exists.
+    #[inline]
+    pub fn skip_optional_lf(&mut self) -> PResult<bool> {
+        let buf = self.r.fill_buf()?;
+        if buf.starts_with(b"\n") {
+            self.r.consume(1);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     #[inline(always)]
@@ -266,11 +283,13 @@ impl<R: BufRead> BufInput<R> {
     pub fn bump_directive(&self) {
         let unread = unsafe { &mut *self.unread.get() };
         #[cfg(debug_assertions)]
-        let input = unsafe { &*self.input.get() };
-        debug_assert!(
-            *unread || input.eof,
-            "bump_directive not preceded by peek_directive",
-        );
+        {
+            let input = unsafe { &*self.input.get() };
+            debug_assert!(
+                *unread || input.eof,
+                "bump_directive not preceded by peek_directive",
+            );
+        }
         *unread = false;
     }
 
@@ -303,43 +322,40 @@ impl<R: BufRead> BufInput<R> {
     }
 
     /// Reads from the data stream into `buf`.
+    #[inline(always)]
     pub fn read_data(&self, buf: &mut [u8], s: &mut DataState) -> PResult<usize> {
         let input = unsafe { &mut *self.input.get() };
-        let finished_before = s.finished;
-        let n = input.read_data(buf, s)?;
-        if s.finished && !finished_before {
-            self.skip_optional_lf()?;
-        }
-        Ok(n)
+        input.read_data(buf, s)
     }
 
     /// Reads to the end of the data stream without copying it.
+    #[inline(always)]
     pub fn skip_data(&self, s: &mut DataState) -> PResult<u64> {
-        // TODO: Move DataState handling to BufInput
         let input = unsafe { &mut *self.input.get() };
-        let finished_before = s.finished;
-        let n = input.skip_data(s)?;
-        if s.finished && !finished_before {
-            self.skip_optional_lf()?;
-        }
-        Ok(n)
+        input.skip_data(s)
     }
 
     /// Reads all of the data stream into `buf`.
+    #[inline(always)]
     pub fn read_data_to_end(&self, header: DataHeader<&[u8]>, buf: &mut Vec<u8>) -> PResult<usize> {
         let input = unsafe { &mut *self.input.get() };
-        let len = match header {
-            DataHeader::Counted { len } => input.read_counted_data_to_end(len, buf)?,
-            DataHeader::Delimited { delim } => input.read_delimited_data_to_end(delim, buf)?,
-        };
-        self.skip_optional_lf()?;
-        Ok(len)
+        match header {
+            DataHeader::Counted { len } => input.read_counted_data_to_end(len, buf),
+            DataHeader::Delimited { delim } => input.read_delimited_data_to_end(delim, buf),
+        }
     }
 
-    /// Skips a trailing LF, if one exists, before reading the next directive.
+    /// Skips a trailing LF, if one exists.
+    #[inline(always)]
     pub fn skip_optional_lf(&self) -> PResult<()> {
-        if self.peek_directive()? == Some(b"") {
-            self.bump_directive();
+        #[cfg(debug_assertions)]
+        {
+            let unread = unsafe { *self.unread.get() };
+            debug_assert!(!unread, "skipping optional LF with unread line");
+        }
+        let input = unsafe { &mut *self.input.get() };
+        if input.skip_optional_lf()? {
+            self.lines.push_back();
         }
         Ok(())
     }
