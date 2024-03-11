@@ -45,7 +45,7 @@ impl<R: BufRead> Input<R> {
     ///
     // Corresponds to `strbuf_getline_lf` in strbuf.c.
     #[inline(always)]
-    fn read_line<'a>(&mut self, buf: &'a mut Vec<u8>) -> io::Result<&'a [u8]> {
+    fn read_line<'a>(&mut self, buf: &'a mut Vec<u8>) -> io::Result<Option<&'a [u8]>> {
         debug_assert!(!self.eof, "already at EOF");
         let start = buf.len();
         self.r.read_until(b'\n', buf)?;
@@ -55,9 +55,12 @@ impl<R: BufRead> Input<R> {
         } else {
             // EOF is reached in `read_until` iff the delimiter is not included.
             self.eof = true;
+            if start == end {
+                return Ok(None);
+            }
         }
         self.line += 1;
-        Ok(&buf[start..end])
+        Ok(Some(&buf[start..end]))
     }
 
     /// Reads all of the counted data stream into `buf`.
@@ -85,7 +88,9 @@ impl<R: BufRead> Input<R> {
         let start = buf.len();
         loop {
             let len = buf.len();
-            let line = self.read_line(buf)?;
+            let Some(line) = self.read_line(buf)? else {
+                return Err(ParseError::UnterminatedData.into());
+            };
             if line == delim {
                 buf.truncate(len);
                 return Ok(len - start);
@@ -124,7 +129,9 @@ impl<R: BufRead> Input<R> {
                 }
                 s.line_buf.clear();
                 s.line_offset = 0;
-                let line = self.read_line(&mut s.line_buf)?;
+                let Some(line) = self.read_line(&mut s.line_buf)? else {
+                    return Err(ParseError::UnterminatedData.into());
+                };
                 if line == s.delim {
                     s.finished = true;
                     return Ok(0);
@@ -173,7 +180,9 @@ impl<R: BufRead> Input<R> {
                     return Err(ParseError::UnterminatedData.into());
                 }
                 s.line_buf.clear();
-                let line = self.read_line(&mut s.line_buf)?;
+                let Some(line) = self.read_line(&mut s.line_buf)? else {
+                    return Err(ParseError::UnterminatedData.into());
+                };
                 if line == s.delim {
                     break;
                 }
@@ -220,7 +229,9 @@ impl<R: BufRead> BufInput<R> {
         let input = unsafe { &mut *self.input.get() };
         while !input.eof() {
             let line_buf = self.lines.push_back();
-            let line = input.read_line(line_buf)?;
+            let Some(line) = input.read_line(line_buf)? else {
+                break;
+            };
             if !line.starts_with(b"#") {
                 return Ok(Some(line));
             }

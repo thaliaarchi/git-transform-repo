@@ -165,8 +165,8 @@ impl<R: BufRead> Parser<R> {
         // Read the previous data stream, if the user didn't. Error if the user
         // only partially read the data stream.
         if !self.data_state.get_mut().finished() {
-            // TODO: Allow unfinished length-0 data streams and skip the
-            // optional LF here.
+            // TODO: Skip the optional LF of unfinished length-0 data streams
+            // here.
             if self.data_opened.load(Ordering::Acquire) {
                 return Err(DataReaderError::Unfinished.into());
             }
