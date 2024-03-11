@@ -294,17 +294,23 @@ impl<R: BufRead> BufInput<R> {
     /// Reads from the data stream into `buf`.
     pub fn read_data(&self, buf: &mut [u8], s: &mut DataState) -> PResult<usize> {
         let input = unsafe { &mut *self.input.get() };
-        // TODO: Handle optional LF
-        input.read_data(buf, s)
+        let finished_before = s.finished;
+        let n = input.read_data(buf, s)?;
+        if s.finished && !finished_before {
+            self.skip_optional_lf()?;
+        }
+        Ok(n)
     }
 
     /// Reads to the end of the data stream without copying it.
     pub fn skip_data(&self, s: &mut DataState) -> PResult<u64> {
-        let input = unsafe { &mut *self.input.get() };
-        let n = input.skip_data(s)?;
-        // TODO: Could consume LF twice
         // TODO: Move DataState handling to BufInput
-        self.skip_optional_lf()?;
+        let input = unsafe { &mut *self.input.get() };
+        let finished_before = s.finished;
+        let n = input.skip_data(s)?;
+        if s.finished && !finished_before {
+            self.skip_optional_lf()?;
+        }
         Ok(n)
     }
 
