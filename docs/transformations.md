@@ -66,13 +66,36 @@ difficulties with foxtrot merges in [a31a381] (filter-repo: delete complex code,
 ## Modifying files in any commit
 
 filter-repo does not allow filters to modify blobs while processing commits, due
-to performance code. (It's discussed in `contrib/filter-repo-demos/filter-lamely`.)
+to performance code. (It's discussed in the [`filter-lamely`](https://github.com/newren/git-filter-repo/blob/main/contrib/filter-repo-demos/filter-lamely)
+demo.)
 
-However, this would be useful, for example, to automatically update license
-header years in any commit that touches a file that had not already been
-modified that year. With the extended hook callbacks, the changed blobs could
-be requested on demand (using `cat-blob` in the fast-import stream) and
-modified.
+### Updating license headers
+
+This would be useful, for example, to automatically update license header years
+in any commit that touches a file that had not already been modified that year
+and to add license headers to files missing them. With the extended hook
+callbacks, the changed blobs could be requested on demand (using `cat-blob` in
+the fast-import stream) and modified.
+
+### Splitting files
+
+Since git has poor support for tracking cross-file textual moves, it may be
+desirable to split a file into many files through all of its history.
+
+I've wanted this for when I kept notes in a huge prepend-only Markdown file with
+headers by date, to split it into files by date.
+
+### Extracting subsets of files
+
+When maintaining a port of another project, where you want to track upstream
+changes, it could be useful to produce a filtered repo with only the definitions
+used by the relevant code, so that the diffs are fewer and focused on what you
+care about.
+
+For example, filter-repo-rust ports all of the parsing from git fast-import and
+it would be useful to filter git.git to just the definitions reachable from
+builtin/fast-import.c, such as the oid and date parsing that is reused
+elsewhere. This would require language-aware static analysis and code splitting.
 
 ## Rewriting quoted commit messages
 

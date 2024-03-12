@@ -72,12 +72,12 @@ as as a binary and library, it could be plugged in directly.
 ### Other VCSes
 
 It may be worth porting hg-fast-export for stability and control, as I ran into
-[a change](https://github.com/thaliaarchi/repo-archival/commit/890abd5d36c1f5bfce81f5f884d42835f6e57e0e)
-which now produces different output from before. Although that change may have
-improved correctness for future conversions, it is now different from existing
-conversions that seem to have used the tool (or some other tool that happens to
-produce the same output). I usually work with old repos and need
-reproducibility.
+[a change](https://github.com/frej/fast-export/commit/4c10270302979f76d3bf143a2c3b3374c1b36e2c)
+which now produces different output from before for [some projects](https://github.com/thaliaarchi/repo-archival/commit/890abd5d36c1f5bfce81f5f884d42835f6e57e0e).
+Although that change may have improved correctness for future conversions, it is
+now different from existing conversions that seem to have used the tool (or some
+other tool that happens to produce the same output). I usually work with old
+repos and need reproducibility.
 
 ### Remote machines
 
@@ -187,6 +187,9 @@ keep their same flags like `--commit-callback` and the new style would be named
 differently. Perhaps `--process-commit`, `--commit-hook`, `--handle-commit`, or
 `--on-commit`?
 
+Alternatively, callbacks could be Python [properties](https://docs.python.org/3/library/functions.html#property),
+so they could retain the same user-facing API, but be on demand.
+
 ## Scripting
 
 Scripting is essential for easy extensibility.
@@ -227,3 +230,46 @@ three-variant enum (`Rust`, `Python`, and `None`). When it's Rust, a cheaper
 representation without copying would be passed to the callback. If the two APIs
 are similar enough, perhaps the Rust representation could be automatically
 wrapped for Python with codegen similarly to bindgen.
+
+## Compatibility
+
+I aim to make git-transform-repo be able to operate in a mode that's drop-in
+compatible with git-filter-repo. Perhaps `git transform-repo filter-repo`. It
+may be worth making a similar compatibility mode with git filter-branch,
+although I would get that for free from [filter-lamely](https://github.com/newren/git-filter-repo/blob/main/contrib/filter-repo-demos/filter-lamely)
+with making a fully compatible Python interface.
+
+## Full reproducibility
+
+Unfortunately, relying on fast-export streams is lossy in some ways. To maintain
+full fidelity may require working with lower level access.
+
+### Tree tags
+
+The [git fast-export docs](https://git-scm.com/docs/git-fast-export#_limitations)
+state:
+
+> Since `git fast-import` cannot tag trees, you will not be able to export the
+> linux.git repository completely, as it contains a tag referencing a tree
+> instead of a commit.
+
+However, it seems the `ls` fast-import command can reveal the oid of a tree made
+in a commit. With a list of all tags, filtered to those tagging trees,
+cross-referenced with commits that introduce those trees, you could obtain the
+commits that contain those trees. Then in the stream, after dumping a
+corresponding commit (even if transformed), the tree ref could be found with
+`ls` and tagged. That would only work for tagged trees that are reachable from
+commits.
+
+### Atypical object formats
+
+git object headers are parsed permissively, so there are multiple valid
+representations. For example, an impedance mismatch between git's and GitHub's
+parsing of the author line, has led to a [vulnerability](https://iter.ca/post/gh-sig-pwn/).
+(If multiple author lines are provided, git uses only the first.) As another
+example, some tools to [bruteforce vanity hashes](https://github.com/prasmussen/git-vanity-hash)
+use non-standard headers that git ignores. In the [hash function transition](https://git-scm.com/docs/hash-function-transition#_invalid_objects),
+the design considers round-tripping some forms of invalid objects. There are
+also likely several cases where git's parsing allows silently invalid inputs, as
+I've seen with error handling for the `strto*` functions in fast-import.
+fast-export streams can handle none of these variations.
