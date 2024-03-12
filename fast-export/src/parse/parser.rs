@@ -6,7 +6,7 @@
 use std::{
     cell::UnsafeCell,
     io::{self, BufRead},
-    str,
+    str::{self, FromStr},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -14,8 +14,9 @@ use thiserror::Error;
 
 use crate::{
     command::{
-        Alias, Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, Mark,
-        Objectish, OriginalOid, PersonIdent, Progress, Reset, Tag, TagName,
+        Alias, Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, FileSize,
+        Mark, Objectish, OptionCommand, OptionGit, OptionOther, OriginalOid, PersonIdent, Progress,
+        Reset, Tag, TagName, UnitFactor,
     },
     parse::{BufInput, DataReaderError, DataState, DirectiveParser, PResult},
 };
@@ -147,9 +148,16 @@ pub enum ParseError {
     #[error("expected 'to' directive in alias")]
     ExpectedAliasTo,
 
+    #[error("unrecognized 'option git' option")]
+    UnsupportedGitOption,
+    #[error("invalid file size argument in option")]
+    InvalidOptionFileSize,
+    #[error("invalid integer argument in option")]
+    InvalidOptionInt,
+
     /// The command is not recognized.
-    #[error("unsupported command")]
-    UnsupportedCommand,
+    #[error("unrecognized command")]
+    UnrecognizedCommand,
     /// Unexpected blank line instead of a command.
     #[error("unexpected blank line")]
     UnexpectedBlank,
@@ -217,7 +225,7 @@ impl<R: BufRead> Parser<R> {
         } else if line == b"" {
             Err(ParseError::UnexpectedBlank.into())
         } else {
-            Err(ParseError::UnsupportedCommand.into())
+            Err(ParseError::UnrecognizedCommand.into())
         }
     }
 
@@ -354,8 +362,13 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_option` in fast-import.c.
-    fn parse_option<'a>(&'a self, _option: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
-        todo!()
+    fn parse_option<'a>(&'a self, option: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
+        let option = if let Some(option) = option.strip_prefix(b"git ") {
+            OptionCommand::Git(OptionGit::parse(option)?)
+        } else {
+            OptionCommand::Other(OptionOther { option })
+        };
+        Ok(Command::Option(option))
     }
 
     /// Parses a `data` directive and reads its contents into memory. git
@@ -435,7 +448,7 @@ impl Mark {
         let [b':', mark @ ..] = mark else {
             return Err(ParseError::MarkMissingColon.into());
         };
-        let mark = parse_u64(mark).ok_or(ParseError::InvalidMark)?;
+        let mark = parse_int(mark).ok_or(ParseError::InvalidMark)?;
         let mark = Mark::new(mark).ok_or(ParseError::ZeroMark)?;
         Ok(mark)
     }
@@ -538,19 +551,69 @@ impl<'a> DataHeader<&'a [u8]> {
             }
             Ok(DataHeader::Delimited { delim })
         } else {
-            let len = parse_u64(arg).ok_or(ParseError::InvalidDataLength)?;
+            let len = parse_int(arg).ok_or(ParseError::InvalidDataLength)?;
             Ok(DataHeader::Counted { len })
         }
     }
 }
 
+impl<'a> OptionGit<&'a [u8]> {
+    // Corresponds to `parse_one_option` in fast-import.c.
+    fn parse(option: &'a [u8]) -> PResult<Self> {
+        if let Some(size) = option.strip_prefix(b"max-pack-size=") {
+            Ok(OptionGit::MaxPackSize {
+                size: FileSize::parse(size)?,
+            })
+        } else if let Some(size) = option.strip_prefix(b"big-file-threshold=") {
+            Ok(OptionGit::BigFileThreshold {
+                size: FileSize::parse(size)?,
+            })
+        } else if let Some(depth) = option.strip_prefix(b"depth=") {
+            Ok(OptionGit::Depth {
+                depth: parse_int(depth).ok_or(ParseError::InvalidOptionInt)?,
+            })
+        } else if let Some(count) = option.strip_prefix(b"active-branches=") {
+            Ok(OptionGit::ActiveBranches {
+                count: parse_int(count).ok_or(ParseError::InvalidOptionInt)?,
+            })
+        } else if let Some(filename) = option.strip_prefix(b"export-pack-edges=") {
+            Ok(OptionGit::ExportPackEdges { filename })
+        } else if option == b"quiet" {
+            Ok(OptionGit::Quiet)
+        } else if option == b"stats" {
+            Ok(OptionGit::Stats)
+        } else if option == b"allow-unsafe-features" {
+            Ok(OptionGit::AllowUnsafeFeatures)
+        } else {
+            Err(ParseError::UnrecognizedCommand.into())
+        }
+    }
+}
+
+impl FileSize {
+    fn parse(size: &[u8]) -> PResult<Self> {
+        let (value, unit) = match size {
+            [value @ .., b'k' | b'K'] => (value, UnitFactor::K),
+            [value @ .., b'm' | b'M'] => (value, UnitFactor::M),
+            [value @ .., b'g' | b'G'] => (value, UnitFactor::G),
+            _ => (size, UnitFactor::B),
+        };
+        Ok(FileSize {
+            value: parse_int(value).ok_or(ParseError::InvalidOptionFileSize)?,
+            unit,
+        })
+    }
+}
+
+// TODO: Return `PResult<T>`.
 #[inline]
-fn parse_u64(b: &[u8]) -> Option<u64> {
+fn parse_int<T: FromStr>(b: &[u8]) -> Option<T> {
     // TODO: Make an integer parsing routine, to precisely control the grammar
     // and protect from upstream changes.
     if b.starts_with(b"+") {
         return None;
     }
-    // SAFETY: `from_str_radix` operates on byes and accepts only ASCII.
-    u64::from_str_radix(unsafe { str::from_utf8_unchecked(b) }, 10).ok()
+    // SAFETY: `from_str` for integer types operates on bytes and accepts only
+    // ASCII.
+    T::from_str(unsafe { str::from_utf8_unchecked(b) }).ok()
 }

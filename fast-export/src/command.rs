@@ -141,11 +141,11 @@ pub enum OptionCommand<B> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionGit<B> {
-    MaxPackSize(FileSize),
-    BigFileThreshold(FileSize),
-    Depth(u32),
-    ActiveBranches(u32),
-    ExportPackEdges(B),
+    MaxPackSize { size: FileSize },
+    BigFileThreshold { size: FileSize },
+    Depth { depth: u32 },
+    ActiveBranches { count: u32 },
+    ExportPackEdges { filename: B },
     Quiet,
     Stats,
     AllowUnsafeFeatures,
@@ -461,11 +461,13 @@ impl<T, U> MapBytes<T, U> for OptionGit<T> {
     #[inline(always)]
     fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
         match self {
-            OptionGit::MaxPackSize(n) => OptionGit::MaxPackSize(n),
-            OptionGit::BigFileThreshold(n) => OptionGit::BigFileThreshold(n),
-            OptionGit::Depth(n) => OptionGit::Depth(n),
-            OptionGit::ActiveBranches(n) => OptionGit::ActiveBranches(n),
-            OptionGit::ExportPackEdges(file) => OptionGit::ExportPackEdges(f(file)),
+            OptionGit::MaxPackSize { size } => OptionGit::MaxPackSize { size },
+            OptionGit::BigFileThreshold { size } => OptionGit::BigFileThreshold { size },
+            OptionGit::Depth { depth } => OptionGit::Depth { depth },
+            OptionGit::ActiveBranches { count } => OptionGit::ActiveBranches { count },
+            OptionGit::ExportPackEdges { filename } => OptionGit::ExportPackEdges {
+                filename: f(filename),
+            },
             OptionGit::Quiet => OptionGit::Quiet,
             OptionGit::Stats => OptionGit::Stats,
             OptionGit::AllowUnsafeFeatures => OptionGit::AllowUnsafeFeatures,

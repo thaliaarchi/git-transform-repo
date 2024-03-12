@@ -11,7 +11,7 @@ command ::=
     | alias
     | "progress " NOT_LF_ONLY* LF? SEP
     | "feature " feature
-    | "option git " option_git
+    | "option git " option_git SEP
     | "option " NOT_LF* SEP
 
 blob ::=
@@ -118,14 +118,14 @@ data_delimited ::=
     LF?
 
 option_git ::=
-    | "--max-pack-size=" file_size
-    | "--big-file-threshold=" file_size
-    | "--depth=" uint
-    | "--active-branches=" uint
-    | "--export-pack-edges=" filename
-    | "--quiet"
-    | "--stats"
-    | "--allow-unsafe-features"
+    | "max-pack-size=" file_size
+    | "big-file-threshold=" file_size
+    | "depth=" uint
+    | "active-branches=" uint
+    | "export-pack-edges=" filename
+    | "quiet"
+    | "stats"
+    | "allow-unsafe-features"
 filename ::= NOT_LF*
 
 # Time zone must be in the range -1400 to 1400, inclusive.

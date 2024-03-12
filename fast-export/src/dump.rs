@@ -16,26 +16,26 @@ impl<B: AsRef<[u8]>> Dump for OptionGit<B> {
         // Positive sign and leading zeros are not preserved from the source.
         w.write_all(b"option git ")?;
         match self {
-            OptionGit::MaxPackSize(n) => {
-                w.write_all(b"--max-pack-size=")?;
-                n.dump(w)?;
+            OptionGit::MaxPackSize { size } => {
+                w.write_all(b"max-pack-size=")?;
+                size.dump(w)?;
                 w.write_all(b"\n")
             }
-            OptionGit::BigFileThreshold(n) => {
-                w.write_all(b"--big-file-threshold=")?;
-                n.dump(w)?;
+            OptionGit::BigFileThreshold { size } => {
+                w.write_all(b"big-file-threshold=")?;
+                size.dump(w)?;
                 w.write_all(b"\n")
             }
-            OptionGit::Depth(n) => write!(w, "--depth={n}\n"),
-            OptionGit::ActiveBranches(n) => write!(w, "--active-branches={n}\n"),
-            OptionGit::ExportPackEdges(file) => {
-                write!(w, "--export-pack-edges=")?;
-                w.write_all(file.as_ref())?;
+            OptionGit::Depth { depth } => write!(w, "depth={depth}\n"),
+            OptionGit::ActiveBranches { count } => write!(w, "active-branches={count}\n"),
+            OptionGit::ExportPackEdges { filename } => {
+                write!(w, "export-pack-edges=")?;
+                w.write_all(filename.as_ref())?;
                 w.write_all(b"\n")
             }
-            OptionGit::Quiet => w.write_all(b"--quiet\n"),
-            OptionGit::Stats => w.write_all(b"--stats\n"),
-            OptionGit::AllowUnsafeFeatures => w.write_all(b"--allow-unsafe-features\n"),
+            OptionGit::Quiet => w.write_all(b"quiet\n"),
+            OptionGit::Stats => w.write_all(b"stats\n"),
+            OptionGit::AllowUnsafeFeatures => w.write_all(b"allow-unsafe-features\n"),
         }
     }
 }
