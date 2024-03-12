@@ -17,7 +17,7 @@ use crate::{
         Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, Mark, OriginalOid,
         PersonIdent, Progress,
     },
-    parse::{BufInput, DataReaderError, DataState, PResult},
+    parse::{BufInput, DataReaderError, DataState, DirectiveParser, PResult},
 };
 
 /// A zero-copy pull parser for fast-export streams.
@@ -95,9 +95,6 @@ pub enum ParseError {
     IdentNoSpaceBeforeLt,
     #[error("person identifier does not have ' ' after '>'")]
     IdentNoSpaceAfterGt,
-    /// A `committer` command is required in a commit.
-    #[error("expected committer in commit")]
-    ExpectedCommitter,
 
     /// A mark must start with `:`.
     #[error("mark does not start with ':'")]
@@ -113,10 +110,7 @@ pub enum ParseError {
     #[error("cannot use ':0' as a mark")]
     ZeroMark,
 
-    /// A `data` command is required here.
-    #[error("expected 'data' command")]
-    ExpectedDataCommand,
-    /// The length for a counted `data` command is not a valid integer.
+    /// The length for a counted `data` directive is not a valid integer.
     #[error("invalid data length")]
     InvalidDataLength,
     /// EOF was reached before reading the complete counted data stream.
@@ -134,6 +128,13 @@ pub enum ParseError {
     /// EOF was reached before encountering the data delimiter.
     #[error("unterminated delimited data stream")]
     UnterminatedData,
+
+    #[error("expected 'data' directive in blob")]
+    ExpectedBlobData,
+    #[error("expected committer in commit")]
+    ExpectedCommitCommitter,
+    #[error("expected message in commit")]
+    ExpectedCommitMessage,
 
     /// The command is not recognized.
     #[error("unsupported command")]
@@ -211,9 +212,11 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_new_blob` in fast-import.c.
     fn parse_blob(&self) -> PResult<Command<'_, &[u8], R>> {
-        let mark = self.parse_mark()?;
-        let original_oid = self.parse_original_oid()?;
-        let data_header = self.parse_data_header()?;
+        let mark = self.parse_directive(b"mark ", Mark::parse)?;
+        let original_oid = self.parse_directive(b"original-oid ", OriginalOid::parse)?;
+        let data_header = self
+            .parse_directive(b"data ", DataHeader::parse)?
+            .ok_or(ParseError::ExpectedBlobData)?;
 
         let data_state = unsafe { &mut *self.data_state.get() };
         data_state.init(&data_header, &self.data_opened);
@@ -229,16 +232,18 @@ impl<R: BufRead> Parser<R> {
     // Corresponds to `parse_new_commit` in fast-import.c.
     fn parse_commit<'a>(&'a self, branch: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         let branch = Branch::parse(branch)?;
-        let mark = self.parse_mark()?;
-        let original_oid = self.parse_original_oid()?;
-        let author = self.parse_person_ident(b"author ")?;
+        let mark = self.parse_directive(b"mark ", Mark::parse)?;
+        let original_oid = self.parse_directive(b"original-oid ", OriginalOid::parse)?;
+        let author = self.parse_directive(b"author ", PersonIdent::parse)?;
         let committer = self
-            .parse_person_ident(b"committer ")?
-            .ok_or(ParseError::ExpectedCommitter)?;
-        let encoding = self.parse_encoding()?;
-        let message = self.parse_data_small()?;
-        let from = self.parse_from()?;
-        let merge = self.parse_merge()?;
+            .parse_directive(b"committer ", PersonIdent::parse)?
+            .ok_or(ParseError::ExpectedCommitCommitter)?;
+        let encoding = self.parse_directive(b"encoding ", Encoding::parse)?;
+        let message = self
+            .parse_data_small()?
+            .ok_or(ParseError::ExpectedCommitMessage)?;
+        let from = self.parse_directive(b"from ", Commitish::parse)?;
+        let merge = self.parse_directive_many(b"merge ", Commitish::parse)?;
 
         Ok(Command::Commit(Commit {
             branch,
@@ -287,6 +292,14 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_alias` in fast-import.c.
     fn parse_alias(&self) -> PResult<Command<'_, &[u8], R>> {
+        // self.input.skip_optional_lf()?;
+        // let mark = self
+        //     .parse_directive(b"mark ", Mark::parse)?
+        //     .ok_or(ParseError::ExpectedAliasMark)?;
+        // let to = self
+        //     .parse_directive(b"to ", Commitish::parse)?
+        //     .ok_or(ParseError::ExpectedAliasTo)?;
+        // Ok(Command::Alias(Alias { mark, to }))
         todo!()
     }
 
@@ -306,55 +319,26 @@ impl<R: BufRead> Parser<R> {
         todo!()
     }
 
-    // Corresponds to `parse_mark` in fast-import.c.
-    fn parse_mark(&self) -> PResult<Option<Mark>> {
-        self.input.parse_directive(b"mark ", Mark::parse)
-    }
-
-    // Corresponds to `parse_original_identifier` in fast-import.c.
-    fn parse_original_oid(&self) -> PResult<Option<OriginalOid<&[u8]>>> {
-        self.input
-            .parse_directive(b"original-oid ", OriginalOid::parse)
-    }
-
-    // Corresponds to `parse_from` in fast-import.c.
-    fn parse_from(&self) -> PResult<Option<Commitish<&[u8]>>> {
-        self.input.parse_directive(b"from ", Commitish::parse)
-    }
-
-    // Corresponds to `parse_merge` in fast-import.c.
-    fn parse_merge(&self) -> PResult<Vec<Commitish<&[u8]>>> {
-        self.input.parse_directive_many(b"merge ", Commitish::parse)
-    }
-
-    // Corresponds to `parse_ident` in fast-import.c.
-    fn parse_person_ident(&self, prefix: &[u8]) -> PResult<Option<PersonIdent<&[u8]>>> {
-        self.input.parse_directive(prefix, PersonIdent::parse)
-    }
-
-    // Corresponds to part of `parse_new_commit` in fast-import.c.
-    fn parse_encoding(&self) -> PResult<Option<Encoding<&[u8]>>> {
-        self.input.parse_directive(b"encoding ", Encoding::parse)
-    }
-
-    // Corresponds to `parse_and_store_blob` in fast-import.c.
-    fn parse_data_header(&self) -> PResult<DataHeader<&[u8]>> {
-        self.input
-            .parse_directive(b"data ", DataHeader::parse)?
-            .ok_or(ParseError::ExpectedDataCommand.into())
-    }
-
-    /// Parses a `data` command and reads its contents into memory. git
+    /// Parses a `data` directive and reads its contents into memory. git
     /// fast-import reads commit and tag messages into memory with no size
     /// limit.
     ///
     // Corresponds to `parse_data` in fast-import.c.
-    fn parse_data_small(&self) -> PResult<&[u8]> {
-        let header = self.parse_data_header()?;
+    fn parse_data_small(&self) -> PResult<Option<&[u8]>> {
+        let Some(header) = self.parse_directive(b"data ", DataHeader::parse)? else {
+            return Ok(None);
+        };
         let message_buf = unsafe { &mut *self.message_buf.get() };
         message_buf.clear();
         self.input.read_data_to_end(header, message_buf)?;
-        Ok(message_buf)
+        Ok(Some(message_buf))
+    }
+}
+
+impl<R: BufRead> DirectiveParser<R> for Parser<R> {
+    #[inline(always)]
+    fn input(&self) -> &BufInput<R> {
+        &self.input
     }
 }
 
@@ -482,9 +466,9 @@ impl<'a> Encoding<&'a [u8]> {
 }
 
 impl<'a> DataHeader<&'a [u8]> {
-    /// Parses a `data` command, but does not read its contents. git fast-import
-    /// reads blobs into memory or switches to streaming when they exceed
-    /// `--big-file-threshold` (default 512MiB).
+    /// Parses a `data` directive, but does not read its contents. git
+    /// fast-import reads blobs into memory or switches to streaming when they
+    /// exceed `--big-file-threshold` (default 512MiB).
     ///
     // Corresponds to `parse_and_store_blob` in fast-import.c.
     fn parse(arg: &'a [u8]) -> PResult<Self> {

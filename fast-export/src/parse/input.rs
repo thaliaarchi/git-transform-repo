@@ -30,6 +30,35 @@ pub(super) struct BufInput<R> {
     unread: UnsafeCell<bool>,
 }
 
+pub(super) trait DirectiveParser<R: BufRead> {
+    fn input(&self) -> &BufInput<R>;
+
+    #[inline(always)]
+    fn parse_directive<'a, F, T>(&'a self, prefix: &[u8], parse: F) -> PResult<Option<T>>
+    where
+        F: FnOnce(&'a [u8]) -> PResult<T>,
+        T: 'a,
+        R: 'a,
+    {
+        self.input().parse_directive(prefix, parse)
+    }
+
+    #[inline(always)]
+    fn parse_directive_many<'a, F, T>(&'a self, prefix: &[u8], parse: F) -> PResult<Vec<T>>
+    where
+        F: FnMut(&'a [u8]) -> PResult<T>,
+        T: 'a,
+        R: 'a,
+    {
+        self.input().parse_directive_many(prefix, parse)
+    }
+
+    #[inline(always)]
+    fn skip_optional_lf(&self) -> PResult<()> {
+        self.input().skip_optional_lf()
+    }
+}
+
 impl<R: BufRead> Input<R> {
     #[inline(always)]
     pub fn new(input: R) -> Self {
@@ -293,7 +322,6 @@ impl<R: BufRead> BufInput<R> {
         *unread = false;
     }
 
-    #[inline(always)]
     pub fn parse_directive<'a, F, T>(&'a self, prefix: &[u8], parse: F) -> PResult<Option<T>>
     where
         F: FnOnce(&'a [u8]) -> PResult<T>,
@@ -308,7 +336,6 @@ impl<R: BufRead> BufInput<R> {
         }
     }
 
-    #[inline(always)]
     pub fn parse_directive_many<'a, F, T>(&'a self, prefix: &[u8], mut parse: F) -> PResult<Vec<T>>
     where
         F: FnMut(&'a [u8]) -> PResult<T>,
