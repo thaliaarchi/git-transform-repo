@@ -27,7 +27,7 @@ pub enum Command<'a, B, R> {
     Done(Done),
     Alias(Alias<B>),
     Progress(Progress<B>),
-    Feature(Feature),
+    Feature(Feature<B>),
     Option(OptionCommand<B>),
 }
 
@@ -131,7 +131,63 @@ pub struct Progress<B> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Feature;
+pub enum Feature<B> {
+    DateFormat {
+        format: DateFormat,
+    },
+    ImportMarks {
+        path: FastImportPath<B>,
+        ignore_missing: bool,
+    },
+    ExportMarks {
+        path: FastImportPath<B>,
+    },
+    Alias,
+    RewriteSubmodulesTo {
+        submodule_name: B,
+        marks_path: B,
+    },
+    RewriteSubmodulesFrom {
+        submodule_name: B,
+        marks_path: B,
+    },
+    GetMark,
+    CatBlob,
+    RelativeMarks {
+        relative: bool,
+    },
+    Done,
+    Force,
+    Notes,
+    Ls,
+    Other {
+        feature: B,
+    },
+}
+
+impl<B> Feature<B> {
+    /// Whether this feature requires `--allow-unsafe-features`, when requested
+    /// in a stream.
+    pub fn is_unsafe(&self) -> bool {
+        matches!(
+            self,
+            Feature::ImportMarks { .. } | Feature::ExportMarks { .. }
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DateFormat {
+    Raw,
+    RawPermissive,
+    Rfc2822,
+    Now,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FastImportPath<B> {
+    pub path: B,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OptionCommand<B> {
@@ -145,7 +201,7 @@ pub enum OptionGit<B> {
     BigFileThreshold { size: FileSize },
     Depth { depth: u32 },
     ActiveBranches { count: u32 },
-    ExportPackEdges { filename: B },
+    ExportPackEdges { path: B },
     Quiet,
     Stats,
     AllowUnsafeFeatures,
@@ -353,7 +409,7 @@ impl<'a, T, U, R> MapBytes<T, U> for Command<'a, T, R> {
             Command::Done(done) => Command::Done(done),
             Command::Alias(alias) => Command::Alias(alias.map_bytes(f)),
             Command::Progress(progress) => Command::Progress(progress.map_bytes(f)),
-            Command::Feature(feature) => Command::Feature(feature),
+            Command::Feature(feature) => Command::Feature(feature.map_bytes(f)),
             Command::Option(option) => Command::Option(option.map_bytes(f)),
         }
     }
@@ -443,6 +499,61 @@ impl<T, U> MapBytes<T, U> for Progress<T> {
     }
 }
 
+impl<T, U> MapBytes<T, U> for Feature<T> {
+    type Output = Feature<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        match self {
+            Feature::DateFormat { format } => Feature::DateFormat { format },
+            Feature::ImportMarks {
+                path,
+                ignore_missing,
+            } => Feature::ImportMarks {
+                path: path.map_bytes(f),
+                ignore_missing,
+            },
+            Feature::ExportMarks { path } => Feature::ExportMarks {
+                path: path.map_bytes(f),
+            },
+            Feature::Alias => Feature::Alias,
+            Feature::RewriteSubmodulesTo {
+                submodule_name,
+                marks_path,
+            } => Feature::RewriteSubmodulesTo {
+                submodule_name: f(submodule_name),
+                marks_path: f(marks_path),
+            },
+            Feature::RewriteSubmodulesFrom {
+                submodule_name,
+                marks_path,
+            } => Feature::RewriteSubmodulesFrom {
+                submodule_name: f(submodule_name),
+                marks_path: f(marks_path),
+            },
+            Feature::GetMark => Feature::GetMark,
+            Feature::CatBlob => Feature::CatBlob,
+            Feature::RelativeMarks { relative } => Feature::RelativeMarks { relative },
+            Feature::Done => Feature::Done,
+            Feature::Force => Feature::Force,
+            Feature::Notes => Feature::Notes,
+            Feature::Ls => Feature::Ls,
+            Feature::Other { feature } => Feature::Other {
+                feature: f(feature),
+            },
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for FastImportPath<T> {
+    type Output = FastImportPath<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        FastImportPath { path: f(self.path) }
+    }
+}
+
 impl<T, U> MapBytes<T, U> for OptionCommand<T> {
     type Output = OptionCommand<U>;
 
@@ -465,9 +576,7 @@ impl<T, U> MapBytes<T, U> for OptionGit<T> {
             OptionGit::BigFileThreshold { size } => OptionGit::BigFileThreshold { size },
             OptionGit::Depth { depth } => OptionGit::Depth { depth },
             OptionGit::ActiveBranches { count } => OptionGit::ActiveBranches { count },
-            OptionGit::ExportPackEdges { filename } => OptionGit::ExportPackEdges {
-                filename: f(filename),
-            },
+            OptionGit::ExportPackEdges { path } => OptionGit::ExportPackEdges { path: f(path) },
             OptionGit::Quiet => OptionGit::Quiet,
             OptionGit::Stats => OptionGit::Stats,
             OptionGit::AllowUnsafeFeatures => OptionGit::AllowUnsafeFeatures,

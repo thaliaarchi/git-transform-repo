@@ -14,9 +14,9 @@ use thiserror::Error;
 
 use crate::{
     command::{
-        Alias, Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, FileSize,
-        Mark, Objectish, OptionCommand, OptionGit, OptionOther, OriginalOid, PersonIdent, Progress,
-        Reset, Tag, TagName, UnitFactor,
+        Alias, Blob, Branch, Command, Commit, Commitish, DataHeader, DateFormat, Done, Encoding,
+        FastImportPath, Feature, FileSize, Mark, Objectish, OptionCommand, OptionGit, OptionOther,
+        OriginalOid, PersonIdent, Progress, Reset, Tag, TagName, UnitFactor,
     },
     parse::{BufInput, DataReaderError, DataState, DirectiveParser, PResult},
 };
@@ -78,14 +78,24 @@ pub enum StreamError {
 /// A kind of error from parsing a command in a fast-export stream.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
 pub enum ParseError {
-    /// The branch name contains NUL. fast-import accepts such branch names, but
-    /// silently truncates them to the first NUL.
+    // Fields that are silently truncated by fast-import when they contain NUL.
     #[error("branch name contains NUL")]
     BranchContainsNul,
-    /// The person identifier contains NUL. fast-import does not read text after
-    /// NUL in such commands.
     #[error("person identifier contains NUL")]
     IdentContainsNul,
+    #[error("encoding specifier contains NUL")]
+    EncodingContainsNul,
+    /// A data delimiter containing NUL is truncated and will never match with a
+    /// closing delimiter, always leaving its data unterminated.
+    #[error("data delimiter contains NUL")]
+    DataDelimContainsNul,
+    #[error("tag name contains NUL")]
+    TagContainsNul,
+    #[error("path contains NUL")]
+    PathContainsNul,
+    #[error("rewrite submodules feature contains NUL")]
+    RewriteSubmodulesContainsNul,
+
     #[error("person identifier does not have '<' or '>'")]
     IdentNoLtOrGt,
     #[error("person identifier does not have '<' before '>'")]
@@ -96,9 +106,6 @@ pub enum ParseError {
     IdentNoSpaceBeforeLt,
     #[error("person identifier does not have ' ' after '>'")]
     IdentNoSpaceAfterGt,
-
-    #[error("tag name contains NUL")]
-    TagContainsNul,
 
     /// A mark must start with `:`.
     #[error("mark does not start with ':'")]
@@ -120,11 +127,6 @@ pub enum ParseError {
     /// EOF was reached before reading the complete counted data stream.
     #[error("unexpected EOF in data stream")]
     DataUnexpectedEof,
-    /// fast-import accepts opening, but not closing, delimiters that contain
-    /// NUL, so it will never terminate such data. This error detects that
-    /// early.
-    #[error("data delimiter contains NUL")]
-    DataDelimContainsNul,
     /// fast-import accepts an empty delimiter, but receiving that is most
     /// likely an error, so we reject it.
     #[error("data delimiter is empty")]
@@ -147,6 +149,12 @@ pub enum ParseError {
     ExpectedAliasMark,
     #[error("expected 'to' directive in alias")]
     ExpectedAliasTo,
+
+    #[error("invalid date format")]
+    InvalidDateFormat,
+    /// Expected format `name:filename`` for rewrite submodules feature.
+    #[error("expected ':' in submodule rewrite")]
+    RewriteSubmodulesNoColon,
 
     #[error("unrecognized 'option git' option")]
     UnsupportedGitOption,
@@ -357,8 +365,8 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_feature` in fast-import.c.
-    fn parse_feature<'a>(&'a self, _feature: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
-        todo!()
+    fn parse_feature<'a>(&'a self, feature: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
+        Ok(Command::Feature(Feature::parse(feature)?))
     }
 
     // Corresponds to `parse_option` in fast-import.c.
@@ -532,6 +540,9 @@ impl<'a> Encoding<&'a [u8]> {
     // Corresponds to part of `parse_new_commit` in fast-import.c.
     #[inline(always)]
     fn parse(encoding: &'a [u8]) -> PResult<Self> {
+        if encoding.contains(&b'\0') {
+            return Err(ParseError::EncodingContainsNul.into());
+        }
         Ok(Encoding { encoding })
     }
 }
@@ -557,6 +568,100 @@ impl<'a> DataHeader<&'a [u8]> {
     }
 }
 
+impl<'a> Feature<&'a [u8]> {
+    // Corresponds to `parse_one_feature` in fast-import.
+    fn parse(feature: &'a [u8]) -> PResult<Self> {
+        if let Some(format) = feature.strip_prefix(b"date-format=") {
+            Ok(Feature::DateFormat {
+                format: DateFormat::parse(format)?,
+            })
+        } else if let Some(path) = feature.strip_prefix(b"import-marks=") {
+            Ok(Feature::ImportMarks {
+                path: FastImportPath::parse(path)?,
+                ignore_missing: false,
+            })
+        } else if let Some(path) = feature.strip_prefix(b"import-marks-if-exists=") {
+            Ok(Feature::ImportMarks {
+                path: FastImportPath::parse(path)?,
+                ignore_missing: true,
+            })
+        } else if let Some(path) = feature.strip_prefix(b"export-marks=") {
+            Ok(Feature::ExportMarks {
+                path: FastImportPath::parse(path)?,
+            })
+        } else if feature == b"alias" {
+            Ok(Feature::Alias)
+        } else if let Some(args) = feature.strip_prefix(b"rewrite-submodules-to=") {
+            let (submodule_name, marks_path) = parse_rewrite_submodules(args)?;
+            Ok(Feature::RewriteSubmodulesTo {
+                submodule_name,
+                marks_path,
+            })
+        } else if let Some(args) = feature.strip_prefix(b"rewrite-submodules-from=") {
+            let (submodule_name, marks_path) = parse_rewrite_submodules(args)?;
+            Ok(Feature::RewriteSubmodulesFrom {
+                submodule_name,
+                marks_path,
+            })
+        } else if feature == b"get-mark" {
+            Ok(Feature::GetMark)
+        } else if feature == b"cat-blob" {
+            Ok(Feature::CatBlob)
+        } else if feature == b"relative-marks" {
+            Ok(Feature::RelativeMarks { relative: true })
+        } else if feature == b"no-relative-marks" {
+            Ok(Feature::RelativeMarks { relative: false })
+        } else if feature == b"done" {
+            Ok(Feature::Done)
+        } else if feature == b"force" {
+            Ok(Feature::Force)
+        } else if feature == b"notes" {
+            Ok(Feature::Notes)
+        } else if feature == b"ls" {
+            Ok(Feature::Ls)
+        } else {
+            Ok(Feature::Other { feature })
+        }
+    }
+}
+
+impl DateFormat {
+    // Corresponds to `option_date_format` in fast-import.c.
+    fn parse(format: &[u8]) -> PResult<Self> {
+        match format {
+            b"raw" => Ok(DateFormat::Raw),
+            b"raw-permissive" => Ok(DateFormat::RawPermissive),
+            b"rfc2822" => Ok(DateFormat::Rfc2822),
+            b"now" => Ok(DateFormat::Now),
+            _ => Err(ParseError::InvalidDateFormat.into()),
+        }
+    }
+}
+
+impl<'a> FastImportPath<&'a [u8]> {
+    // Corresponds to part of `make_fast_import_path` in fast-import.c.
+    fn parse(path: &'a [u8]) -> PResult<Self> {
+        if path.contains(&b'\0') {
+            return Err(ParseError::PathContainsNul.into());
+        }
+        // TODO: Make method to resolve the full path.
+        Ok(FastImportPath { path })
+    }
+}
+
+// Corresponds to `option_rewrite_submodules` in fast-import.c.
+fn parse_rewrite_submodules(args: &[u8]) -> PResult<(&[u8], &[u8])> {
+    if args.contains(&b'\0') {
+        return Err(ParseError::RewriteSubmodulesContainsNul.into());
+    }
+    let Some(colon) = args.iter().position(|&b| b == b':') else {
+        return Err(ParseError::RewriteSubmodulesNoColon.into());
+    };
+    // TODO: Make method to resolve the full path.
+    let (submodule_name, marks_path) = args.split_at(colon);
+    Ok((submodule_name, marks_path))
+}
+
 impl<'a> OptionGit<&'a [u8]> {
     // Corresponds to `parse_one_option` in fast-import.c.
     fn parse(option: &'a [u8]) -> PResult<Self> {
@@ -576,8 +681,8 @@ impl<'a> OptionGit<&'a [u8]> {
             Ok(OptionGit::ActiveBranches {
                 count: parse_int(count).ok_or(ParseError::InvalidOptionInt)?,
             })
-        } else if let Some(filename) = option.strip_prefix(b"export-pack-edges=") {
-            Ok(OptionGit::ExportPackEdges { filename })
+        } else if let Some(path) = option.strip_prefix(b"export-pack-edges=") {
+            Ok(OptionGit::ExportPackEdges { path })
         } else if option == b"quiet" {
             Ok(OptionGit::Quiet)
         } else if option == b"stats" {

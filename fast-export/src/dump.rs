@@ -28,9 +28,9 @@ impl<B: AsRef<[u8]>> Dump for OptionGit<B> {
             }
             OptionGit::Depth { depth } => write!(w, "depth={depth}\n"),
             OptionGit::ActiveBranches { count } => write!(w, "active-branches={count}\n"),
-            OptionGit::ExportPackEdges { filename } => {
+            OptionGit::ExportPackEdges { path } => {
                 write!(w, "export-pack-edges=")?;
-                w.write_all(filename.as_ref())?;
+                w.write_all(path.as_ref())?;
                 w.write_all(b"\n")
             }
             OptionGit::Quiet => w.write_all(b"quiet\n"),

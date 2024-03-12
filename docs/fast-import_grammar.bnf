@@ -10,7 +10,7 @@ command ::=
     | "done" SEP
     | alias
     | "progress " NOT_LF_ONLY* LF? SEP
-    | "feature " feature
+    | "feature " feature SEP
     | "option git " option_git SEP
     | "option " NOT_LF* SEP
 
@@ -26,7 +26,7 @@ commit ::=
     original_oid?
     ("author " person_ident SEP)?
     "committer " person_ident SEP
-    ("encoding " NOT_LF_ONLY* SEP)?
+    ("encoding " NOT_LF_NUL* SEP)?
     data_small
     ("from " commitish SEP)?
     ("merge " commitish SEP)*
@@ -128,6 +128,27 @@ option_git ::=
     | "allow-unsafe-features"
 filename ::= NOT_LF*
 
+feature ::=
+    | "date-format=" date_format
+    | "import-marks=" path
+    | "import-marks-if-exists=" path
+    | "export-marks=" path
+    | "alias"
+    | "rewrite-submodules-to=" submodule_rewrite
+    | "rewrite-submodules-from=" submodule_rewrite
+    | "get-mark"
+    | "cat-blob"
+    | "relative-marks"
+    | "no-relative-marks"
+    | "done"
+    | "force"
+    | "notes"
+    | "ls"
+path ::= NOT_LF_NUL
+submodule_rewrite ::= submodule_name ":" marks_file
+submodule_name ::= [^:\n\0]
+marks_file ::= NOT_LF_NUL
+
 # Time zone must be in the range -1400 to 1400, inclusive.
 date if --date-format=raw ::= date_raw
 date if --date-format=raw-permissive ::= date_raw
@@ -135,6 +156,12 @@ date if --date-format=rfc2822 ::= … # See parse_date in date.c
 date if --date-format=now ::= "now"
 # BUG: Allows extraneous sign in time zone.
 date_raw ::= int " " [+-] [0-9]+
+
+date_format ::=
+    | "raw"
+    | "raw-permissive"
+    | "rfc2822"
+    | "now"
 
 # BUG: Most uses of strto* have incomplete error handling, allowing unintended
 # signs, parse errors, empty digits, and junk after the integer.
