@@ -14,8 +14,8 @@ use thiserror::Error;
 
 use crate::{
     command::{
-        Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, Mark, OriginalOid,
-        PersonIdent, Progress,
+        Alias, Blob, Branch, Command, Commit, Commitish, DataHeader, Done, Encoding, Mark,
+        Objectish, OriginalOid, PersonIdent, Progress, Reset, Tag, TagName,
     },
     parse::{BufInput, DataReaderError, DataState, DirectiveParser, PResult},
 };
@@ -96,6 +96,9 @@ pub enum ParseError {
     #[error("person identifier does not have ' ' after '>'")]
     IdentNoSpaceAfterGt,
 
+    #[error("tag name contains NUL")]
+    TagContainsNul,
+
     /// A mark must start with `:`.
     #[error("mark does not start with ':'")]
     MarkMissingColon,
@@ -135,6 +138,14 @@ pub enum ParseError {
     ExpectedCommitCommitter,
     #[error("expected message in commit")]
     ExpectedCommitMessage,
+    #[error("expected 'from' directive in tag")]
+    ExpectedTagFrom,
+    #[error("expected message in tag")]
+    ExpectedTagMessage,
+    #[error("expected 'mark' directive in alias")]
+    ExpectedAliasMark,
+    #[error("expected 'to' directive in alias")]
+    ExpectedAliasTo,
 
     /// The command is not recognized.
     #[error("unsupported command")]
@@ -260,13 +271,39 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_new_tag` in fast-import.c.
-    fn parse_tag<'a>(&'a self, _name: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
-        todo!()
+    fn parse_tag<'a>(&'a self, name: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
+        let name = TagName::parse(name)?;
+        let mark = self.parse_directive(b"mark ", Mark::parse)?;
+        let from = self
+            .parse_directive(b"from ", Objectish::parse)?
+            .ok_or(ParseError::ExpectedTagFrom)?;
+        let original_oid = self.parse_directive(b"original-oid ", OriginalOid::parse)?;
+        // TODO: `tagger` is optional in fast-import.c, but required in the
+        // fast-import docs.
+        let tagger = self.parse_directive(b"tagger ", PersonIdent::parse)?;
+        let message = self
+            .parse_data_small()?
+            .ok_or(ParseError::ExpectedTagMessage)?;
+
+        Ok(Command::Tag(Tag {
+            name,
+            mark,
+            from,
+            original_oid,
+            tagger,
+            message,
+        }))
     }
 
     // Corresponds to `parse_reset_branch` in fast-import.c.
-    fn parse_reset<'a>(&'a self, _branch: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
-        todo!()
+    fn parse_reset<'a>(&'a self, branch: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
+        // TODO: Handle deletions and ref namespaces.
+        let branch = Branch::parse(branch)?;
+        let from = self.parse_directive(b"from ", Commitish::parse)?;
+        // TODO: fast-import docs include an optional LF, but fast-import.c
+        // doesn't seem to.
+
+        Ok(Command::Reset(Reset { branch, from }))
     }
 
     // Corresponds to `parse_ls` in fast-import.c.
@@ -292,15 +329,17 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_alias` in fast-import.c.
     fn parse_alias(&self) -> PResult<Command<'_, &[u8], R>> {
-        // self.input.skip_optional_lf()?;
-        // let mark = self
-        //     .parse_directive(b"mark ", Mark::parse)?
-        //     .ok_or(ParseError::ExpectedAliasMark)?;
-        // let to = self
-        //     .parse_directive(b"to ", Commitish::parse)?
-        //     .ok_or(ParseError::ExpectedAliasTo)?;
-        // Ok(Command::Alias(Alias { mark, to }))
-        todo!()
+        // TODO: This optional LF is at the start of the command in
+        // fast-import.c, but at the end in the fast-import docs.
+        self.input.skip_optional_lf()?;
+        let mark = self
+            .parse_directive(b"mark ", Mark::parse)?
+            .ok_or(ParseError::ExpectedAliasMark)?;
+        let to = self
+            .parse_directive(b"to ", Commitish::parse)?
+            .ok_or(ParseError::ExpectedAliasTo)?;
+
+        Ok(Command::Alias(Alias { mark, to }))
     }
 
     // Corresponds to `parse_progress` in fast-import.c.
@@ -372,6 +411,16 @@ impl<'a> Branch<&'a [u8]> {
     }
 }
 
+impl<'a> TagName<&'a [u8]> {
+    // Corresponds to part of `parse_new_tag` in fast-import.c.
+    fn parse(name: &'a [u8]) -> PResult<Self> {
+        if name.contains(&b'\0') {
+            return Err(ParseError::TagContainsNul.into());
+        }
+        Ok(TagName { name })
+    }
+}
+
 impl Mark {
     /// # Differences from fast-import
     ///
@@ -400,16 +449,25 @@ impl<'a> OriginalOid<&'a [u8]> {
     }
 }
 
+impl<'a> Objectish<&'a [u8]> {
+    // Corresponds to `from` in `parse_new_tag` in fast-import.c.
+    fn parse(objectish: &'a [u8]) -> PResult<Self> {
+        // Non-commits are allowed.
+        if objectish.starts_with(b":") {
+            Mark::parse(objectish).map(Objectish::Mark)
+        } else {
+            Ok(Objectish::BranchOrOid(objectish))
+        }
+    }
+}
+
 impl<'a> Commitish<&'a [u8]> {
     // Corresponds to `parse_objectish` and `parse_merge` in fast-import.c.
     fn parse(commitish: &'a [u8]) -> PResult<Self> {
         // TODO: How much of `parse_objectish` should be here or in the
         // front-end?
-        if commitish.starts_with(b":") {
-            Mark::parse(commitish).map(Commitish::Mark)
-        } else {
-            Ok(Commitish::BranchOrOid(commitish))
-        }
+        // Only commits are allowed.
+        Objectish::parse(commitish).map(|objectish| Commitish { commit: objectish })
     }
 }
 

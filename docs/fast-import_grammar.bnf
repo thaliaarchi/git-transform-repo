@@ -1,14 +1,14 @@
 command ::=
     | blob
     | commit
-    | "tag " tag
-    | "reset " reset
+    | tag
+    | reset
     | ls
     | cat_blob
     | "get-mark " get_mark
     | "checkpoint" SEP
     | "done" SEP
-    | "alias" LF? SEP alias
+    | alias
     | "progress " NOT_LF_ONLY* LF? SEP
     | "feature " feature
     | "option git " option_git
@@ -21,25 +21,28 @@ blob ::=
     data_large
 
 commit ::=
-    # BUG: Branch can contain NUL, but comparisons use NUL-terminated.
     "commit " branch SEP
     mark?
     original_oid?
-    ("author" (" " name)? " <" email "> " date SEP)?
-    "committer" (" " name)? " <" email "> " date SEP
+    ("author " person_ident SEP)?
+    "committer " person_ident SEP
     ("encoding " NOT_LF_ONLY* SEP)?
     data_small
-    ("from " objectish SEP)?
-    ("merge " objectish SEP)*
+    ("from " commitish SEP)?
+    ("merge " commitish SEP)*
     (file_modify | file_delete | file_rename | file_copy | note_modify |
         file_deleteall | ls | cat_blob)*
     LF?
-objectish ::= branch | mark_ref
+# BUG: Branch can contain NUL, but comparisons are NUL-terminated.
 # BUG: Empty branch is seemingly allowed.
-branch ::= NOT_LF*
+branch ::= NOT_LF_NUL*
+person_ident ::= (name " ")? "<" email "> " date
 # Empty name and email are seemingly allowed.
 name ::= [^<>\n\0]*
 email ::= [^<>\n\0]*
+objectish ::= branch | mark_ref
+# An objectish restricted to commits
+commitish ::= objectish
 file_modify ::=
     "M " mode " " (file_modify_external | file_modify_inline)
 file_delete ::=
@@ -58,14 +61,39 @@ file_modify_external ::=
 file_modify_inline ::=
     "inline " …
 
+tag ::=
+    "tag " tag_name SEP
+    mark?
+    "from " objectish SEP
+    original_oid?
+    # BUG: `tagger` is optional in fast-import.c, but required in the
+    # fast-import docs.
+    "tagger " person_ident SEP
+    data_small
+# BUG: Name can contain NUL, but its copy is NUL-terminated.
+# BUG: Empty name is seemingly allowed.
+tag_name ::= NOT_LF_NUL
+
+reset ::=
+    "reset " branch SEP
+    ("from " commitish SEP)?
+    # BUG: fast-import docs include LF?, but fast-import.c doesn't seem to.
+
 ls ::=
     "ls " …
 
 cat_blob ::=
     "cat-blob " …
 
+alias ::=
+    # TODO: This optional LF is at the start of the command in fast-import.c,
+    # but at the end in the fast-import docs.
+    "alias" LF? SEP
+    mark
+    "to " commitish SEP
+
 # The mark is 0 when this line is omitted.
-mark ::= "mark :" int SEP
+mark ::= "mark " mark_ref SEP
 mark_ref ::= ":" int
 original_oid ::= "original-oid " NOT_LF_ONLY* SEP
 
@@ -78,14 +106,16 @@ data ::= "data " (data_counted | data_delimited) COMMENTS
 # Reads as many bytes as specified.
 data_counted ::=
     int LF
-    .{length} LF?
-# Consumes lines until the terminator string is found.
+    .{length}
+    LF?
+# Consumes lines until the delimiter string is found.
 # BUG: The delimiter can be empty. The open delimiter may contain NUL, but the
 # closing delimiter may not.
 data_delimited ::=
-    "<<" (?<terminator> NOT_LF_NUL*) LF
+    "<<" (?<delim> NOT_LF_NUL*) LF
     (NOT_LF* LF)*?
-    \k<terminator> LF
+    \k<delim> LF
+    LF?
 
 option_git ::=
     | "--max-pack-size=" file_size
@@ -103,7 +133,7 @@ date if --date-format=raw ::= date_raw
 date if --date-format=raw-permissive ::= date_raw
 date if --date-format=rfc2822 ::= … # See parse_date in date.c
 date if --date-format=now ::= "now"
-# BUG: Allows extraneous sign in time zone
+# BUG: Allows extraneous sign in time zone.
 date_raw ::= int " " [+-] [0-9]+
 
 # BUG: Most uses of strto* have incomplete error handling, allowing unintended

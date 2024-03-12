@@ -18,14 +18,14 @@ use crate::parse::{DataReader, PResult, Parser};
 pub enum Command<'a, B, R> {
     Blob(Blob<'a, B, R>),
     Commit(Commit<B>),
-    Tag(Tag),
-    Reset(Reset),
+    Tag(Tag<B>),
+    Reset(Reset<B>),
     Ls(Ls),
     CatBlob(CatBlob),
     GetMark(GetMark),
     Checkpoint,
     Done(Done),
-    Alias(Alias),
+    Alias(Alias<B>),
     Progress(Progress<B>),
     Feature(Feature),
     Option(OptionCommand<B>),
@@ -85,10 +85,22 @@ pub struct Commit<B> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Tag;
+pub struct Tag<B> {
+    pub name: TagName<B>,
+    pub mark: Option<Mark>,
+    pub from: Objectish<B>,
+    pub original_oid: Option<OriginalOid<B>>,
+    // TODO: `tagger` is optional in fast-import.c, but required in the
+    // fast-import docs.
+    pub tagger: Option<PersonIdent<B>>,
+    pub message: B,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Reset;
+pub struct Reset<B> {
+    pub branch: Branch<B>,
+    pub from: Option<Commitish<B>>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Ls;
@@ -108,7 +120,10 @@ pub enum Done {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Alias;
+pub struct Alias<B> {
+    pub mark: Mark,
+    pub to: Commitish<B>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Progress<B> {
@@ -144,6 +159,11 @@ pub struct OptionOther<B> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Branch<B> {
     pub branch: B,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TagName<B> {
+    pub name: B,
 }
 
 /// An error from validating that a branch has a valid format for git.
@@ -193,10 +213,15 @@ pub struct OriginalOid<B> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Commitish<B> {
+pub enum Objectish<B> {
     Mark(Mark),
     // TODO: Parse branches and oids
     BranchOrOid(B),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Commitish<B> {
+    pub commit: Objectish<B>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -319,14 +344,14 @@ impl<'a, T, U, R> MapBytes<T, U> for Command<'a, T, R> {
         match self {
             Command::Blob(blob) => Command::Blob(blob.map_bytes(f)),
             Command::Commit(commit) => Command::Commit(commit.map_bytes(f)),
-            Command::Tag(tag) => Command::Tag(tag),
-            Command::Reset(reset) => Command::Reset(reset),
+            Command::Tag(tag) => Command::Tag(tag.map_bytes(f)),
+            Command::Reset(reset) => Command::Reset(reset.map_bytes(f)),
             Command::Ls(ls) => Command::Ls(ls),
             Command::CatBlob(cat_blob) => Command::CatBlob(cat_blob),
             Command::GetMark(get_mark) => Command::GetMark(get_mark),
             Command::Checkpoint => Command::Checkpoint,
             Command::Done(done) => Command::Done(done),
-            Command::Alias(alias) => Command::Alias(alias),
+            Command::Alias(alias) => Command::Alias(alias.map_bytes(f)),
             Command::Progress(progress) => Command::Progress(progress.map_bytes(f)),
             Command::Feature(feature) => Command::Feature(feature),
             Command::Option(option) => Command::Option(option.map_bytes(f)),
@@ -363,6 +388,46 @@ impl<T, U> MapBytes<T, U> for Commit<T> {
             message: f(self.message),
             from: self.from.map_bytes(f),
             merge: self.merge.map_bytes(f),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Tag<T> {
+    type Output = Tag<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        Tag {
+            name: self.name.map_bytes(f),
+            mark: self.mark,
+            from: self.from.map_bytes(f),
+            original_oid: self.original_oid.map_bytes(f),
+            tagger: self.tagger.map_bytes(f),
+            message: f(self.message),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Reset<T> {
+    type Output = Reset<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        Reset {
+            branch: self.branch.map_bytes(f),
+            from: self.from.map_bytes(f),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Alias<T> {
+    type Output = Alias<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        Alias {
+            mark: self.mark,
+            to: self.to.map_bytes(f),
         }
     }
 }
@@ -430,6 +495,15 @@ impl<T, U> MapBytes<T, U> for Branch<T> {
     }
 }
 
+impl<T, U> MapBytes<T, U> for TagName<T> {
+    type Output = TagName<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        TagName { name: f(self.name) }
+    }
+}
+
 impl<T, U> MapBytes<T, U> for OriginalOid<T> {
     type Output = OriginalOid<U>;
 
@@ -439,14 +513,25 @@ impl<T, U> MapBytes<T, U> for OriginalOid<T> {
     }
 }
 
+impl<T, U> MapBytes<T, U> for Objectish<T> {
+    type Output = Objectish<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        match self {
+            Objectish::Mark(mark) => Objectish::Mark(mark),
+            Objectish::BranchOrOid(commit) => Objectish::BranchOrOid(f(commit)),
+        }
+    }
+}
+
 impl<T, U> MapBytes<T, U> for Commitish<T> {
     type Output = Commitish<U>;
 
     #[inline(always)]
     fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
-        match self {
-            Commitish::Mark(mark) => Commitish::Mark(mark),
-            Commitish::BranchOrOid(commit) => Commitish::BranchOrOid(f(commit)),
+        Commitish {
+            commit: self.commit.map_bytes(f),
         }
     }
 }
