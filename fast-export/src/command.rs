@@ -20,7 +20,7 @@ pub enum Command<'a, B, R> {
     Commit(Commit<B>),
     Tag(Tag<B>),
     Reset(Reset<B>),
-    Ls(Ls),
+    Ls(Ls<B>),
     CatBlob(CatBlob),
     GetMark(GetMark),
     Checkpoint,
@@ -103,7 +103,10 @@ pub struct Reset<B> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Ls;
+pub struct Ls<B> {
+    pub root: Treeish<B>,
+    pub path: B,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CatBlob;
@@ -281,6 +284,12 @@ pub struct Commitish<B> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Treeish<B> {
+    Mark(Mark),
+    Oid(B),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersonIdent<B> {
     pub name: B,
     pub email: B,
@@ -402,7 +411,7 @@ impl<'a, T, U, R> MapBytes<T, U> for Command<'a, T, R> {
             Command::Commit(commit) => Command::Commit(commit.map_bytes(f)),
             Command::Tag(tag) => Command::Tag(tag.map_bytes(f)),
             Command::Reset(reset) => Command::Reset(reset.map_bytes(f)),
-            Command::Ls(ls) => Command::Ls(ls),
+            Command::Ls(ls) => Command::Ls(ls.map_bytes(f)),
             Command::CatBlob(cat_blob) => Command::CatBlob(cat_blob),
             Command::GetMark(get_mark) => Command::GetMark(get_mark),
             Command::Checkpoint => Command::Checkpoint,
@@ -472,6 +481,18 @@ impl<T, U> MapBytes<T, U> for Reset<T> {
         Reset {
             branch: self.branch.map_bytes(f),
             from: self.from.map_bytes(f),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Ls<T> {
+    type Output = Ls<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        Ls {
+            root: self.root.map_bytes(f),
+            path: f(self.path),
         }
     }
 }
@@ -643,6 +664,18 @@ impl<T, U> MapBytes<T, U> for Commitish<T> {
     fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
         Commitish {
             commit: self.commit.map_bytes(f),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Treeish<T> {
+    type Output = Treeish<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        match self {
+            Treeish::Mark(mark) => Treeish::Mark(mark),
+            Treeish::Oid(oid) => Treeish::Oid(f(oid)),
         }
     }
 }

@@ -31,7 +31,7 @@ commit ::=
     ("from " commitish SEP)?
     ("merge " commitish SEP)*
     (file_modify | file_delete | file_rename | file_copy | note_modify |
-        file_deleteall | ls | cat_blob)*
+        file_deleteall | commit_ls | cat_blob)*
     LF?
 # BUG: Branch can contain NUL, but comparisons are NUL-terminated.
 # BUG: Empty branch is seemingly allowed.
@@ -60,6 +60,9 @@ file_modify_external ::=
     mark_ref " " …
 file_modify_inline ::=
     "inline " …
+commit_ls ::=
+    | ls
+    | "ls " path_quoted SEP
 
 tag ::=
     "tag " tag_name SEP
@@ -80,7 +83,13 @@ reset ::=
     # BUG: fast-import docs include LF?, but fast-import.c doesn't seem to.
 
 ls ::=
-    "ls " …
+    "ls " treeish " " (path_quoted | path_unquoted) SEP
+treeish ::= mark_ref | oid_hex
+oid_hex ::= …
+path_quoted ::= string
+path_unquoted ::= [^\"\n] NOT_LF_NUL*
+# An escaped NUL is seemingly not valid.
+string ::= "\"" ([^"\\\0] | "\\" ([abfnrtv"\\] | [0-3][0-7][0-7]))* "\""
 
 cat_blob ::=
     "cat-blob " …

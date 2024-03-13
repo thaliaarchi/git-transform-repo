@@ -10,15 +10,16 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use memchr::memchr;
 use thiserror::Error;
 
 use crate::{
     command::{
         Alias, Blob, Branch, Command, Commit, Commitish, DataHeader, DateFormat, Done, Encoding,
-        FastImportPath, Feature, FileSize, Mark, Objectish, OptionCommand, OptionGit, OptionOther,
-        OriginalOid, PersonIdent, Progress, Reset, Tag, TagName, UnitFactor,
+        FastImportPath, Feature, FileSize, Ls, Mark, Objectish, OptionCommand, OptionGit,
+        OptionOther, OriginalOid, PersonIdent, Progress, Reset, Tag, TagName, Treeish, UnitFactor,
     },
-    parse::{BufInput, DataReaderError, DataState, DirectiveParser, PResult},
+    parse::{BufInput, DataReaderError, DataState, DirectiveParser, PResult, ParseStringError},
 };
 
 /// A zero-copy pull parser for fast-export streams.
@@ -75,6 +76,21 @@ pub enum StreamError {
 /// A kind of error from parsing a command in a fast-export stream.
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
 pub enum ParseError {
+    #[error("expected 'data' directive in blob")]
+    ExpectedBlobData,
+    #[error("expected committer in commit")]
+    ExpectedCommitCommitter,
+    #[error("expected message in commit")]
+    ExpectedCommitMessage,
+    #[error("expected 'from' directive in tag")]
+    ExpectedTagFrom,
+    #[error("expected message in tag")]
+    ExpectedTagMessage,
+    #[error("expected 'mark' directive in alias")]
+    ExpectedAliasMark,
+    #[error("expected 'to' directive in alias")]
+    ExpectedAliasTo,
+
     // Fields that are silently truncated by fast-import when they contain NUL.
     #[error("branch name contains NUL")]
     BranchContainsNul,
@@ -132,20 +148,14 @@ pub enum ParseError {
     #[error("unterminated delimited data stream")]
     UnterminatedData,
 
-    #[error("expected 'data' directive in blob")]
-    ExpectedBlobData,
-    #[error("expected committer in commit")]
-    ExpectedCommitCommitter,
-    #[error("expected message in commit")]
-    ExpectedCommitMessage,
-    #[error("expected 'from' directive in tag")]
-    ExpectedTagFrom,
-    #[error("expected message in tag")]
-    ExpectedTagMessage,
-    #[error("expected 'mark' directive in alias")]
-    ExpectedAliasMark,
-    #[error("expected 'to' directive in alias")]
-    ExpectedAliasTo,
+    #[error("expected root before path in 'ls'")]
+    MissingLsRoot,
+    #[error("expected path after root in 'ls'")]
+    MissingLsPath,
+    #[error("invalid path in 'ls': {0}")]
+    LsPathString(#[source] ParseStringError),
+    #[error("junk after path in 'ls'")]
+    JunkAfterLsPath,
 
     #[error("invalid date format")]
     InvalidDateFormat,
@@ -318,9 +328,47 @@ impl<R: BufRead> Parser<R> {
         Ok(Command::Reset(Reset { branch, from }))
     }
 
+    // Corresponds to `parse_ls(p, NULL)` in fast-import.c.
+    fn parse_ls<'a>(&'a self, args: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
+        let (root, path) = self.parse_ls_(args, false)?;
+        Ok(Command::Ls(Ls {
+            root: root.unwrap(),
+            path,
+        }))
+    }
+
     // Corresponds to `parse_ls` in fast-import.c.
-    fn parse_ls<'a>(&'a self, _args: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
-        todo!()
+    fn parse_ls_<'a>(
+        &'a self,
+        args: &'a [u8],
+        in_commit: bool,
+    ) -> PResult<(Option<Treeish<&'a [u8]>>, &'a [u8])> {
+        if args.is_empty() {
+            return Err(ParseError::MissingLsPath.into());
+        }
+        let (root, mut path) = if args[0] == b'"' {
+            if !in_commit {
+                return Err(ParseError::MissingLsRoot.into());
+            }
+            (None, args)
+        } else {
+            let i = memchr(b' ', args).ok_or(ParseError::MissingLsPath)?;
+            let (root, path) = args.split_at(i);
+            (Some(Treeish::parse(root)?), path)
+        };
+        if path.is_empty() {
+            return Err(ParseError::MissingLsPath.into());
+        }
+        if path[0] == b'"' {
+            let rest;
+            (path, rest) = self
+                .unquote_c_style_string(path)
+                .map_err(ParseError::LsPathString)?;
+            if !rest.is_empty() {
+                return Err(ParseError::JunkAfterLsPath.into());
+            }
+        }
+        Ok((root, path))
     }
 
     // Corresponds to `parse_cat_blob` in fast-import.c.
@@ -484,6 +532,18 @@ impl<'a> Commitish<&'a [u8]> {
         // front-end?
         // Only commits are allowed.
         Objectish::parse(commitish).map(|objectish| Commitish { commit: objectish })
+    }
+}
+
+impl<'a> Treeish<&'a [u8]> {
+    // Corresponds to `parse_treeish_dataref` in fast-import.c.
+    fn parse(treeish: &'a [u8]) -> PResult<Self> {
+        // TODO: Parse oids.
+        if treeish.starts_with(b":") {
+            Mark::parse(treeish).map(Treeish::Mark)
+        } else {
+            Ok(Treeish::Oid(treeish))
+        }
     }
 }
 

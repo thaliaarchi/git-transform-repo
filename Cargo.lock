@@ -51,6 +51,7 @@ name = "fast-export"
 version = "0.1.0"
 dependencies = [
  "bstr",
+ "memchr",
  "paste",
  "static_assertions",
  "thiserror",

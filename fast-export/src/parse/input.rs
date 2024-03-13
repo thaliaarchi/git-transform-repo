@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     command::DataHeader,
-    parse::{BufPool, DataReaderError, DataState, PResult, ParseError},
+    parse::{BufPool, DataReaderError, DataState, PResult, ParseError, ParseStringError},
 };
 
 /// Input for a fast-export stream.
@@ -64,6 +64,17 @@ pub(super) trait DirectiveParser<R: BufRead> {
         R: 'a,
     {
         self.input().lines.new_aux_buffer()
+    }
+
+    #[inline(always)]
+    fn unquote_c_style_string<'a>(
+        &'a self,
+        s: &'a [u8],
+    ) -> Result<(&'a [u8], &'a [u8]), ParseStringError>
+    where
+        R: 'a,
+    {
+        self.input().lines.unquote_c_style_string(s)
     }
 }
 

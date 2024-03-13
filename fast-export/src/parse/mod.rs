@@ -7,10 +7,12 @@ mod data;
 mod input;
 mod parser;
 mod pool;
+mod quote;
 
 pub use data::*;
 pub(self) use input::*;
 pub use parser::*;
 pub(self) use pool::*;
+pub(self) use quote::*;
 
 pub(crate) type PResult<T> = Result<T, StreamError>;
