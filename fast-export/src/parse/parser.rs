@@ -47,9 +47,6 @@ pub struct Parser<R> {
     /// `Parser::data_opened`.
     pub(super) input: BufInput<R>,
 
-    /// A buffer containing the current commit or tag message.
-    message_buf: UnsafeCell<Vec<u8>>,
-
     /// Whether a `DataReader` has been opened for reading. This guards
     /// `Blob::open`, to ensure that only one `DataReader` can be opened per
     /// call to `Parser::next`.
@@ -177,7 +174,6 @@ impl<R: BufRead> Parser<R> {
     pub fn new(input: R) -> Self {
         Parser {
             input: BufInput::new(input),
-            message_buf: UnsafeCell::new(Vec::new()),
             data_opened: AtomicBool::new(false),
             data_state: UnsafeCell::new(DataState::new()),
         }
@@ -388,8 +384,7 @@ impl<R: BufRead> Parser<R> {
         let Some(header) = self.parse_directive(b"data ", DataHeader::parse)? else {
             return Ok(None);
         };
-        let message_buf = unsafe { &mut *self.message_buf.get() };
-        message_buf.clear();
+        let message_buf = self.new_aux_buffer();
         self.input.read_data_to_end(header, message_buf)?;
         Ok(Some(message_buf))
     }

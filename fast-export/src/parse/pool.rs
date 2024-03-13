@@ -28,6 +28,9 @@ pub(crate) struct BufPool {
 struct BufPoolInner {
     /// The buffers that are currently live and may be referenced externally.
     live: VecDeque<Vec<u8>>,
+    /// Auxiliary buffers that hold data derived from the current command, but
+    /// not directly from the source and not displayed in dumps.
+    aux: Vec<Vec<u8>>,
     /// Buffers that can be reused.
     free: Vec<Vec<u8>>,
 }
@@ -42,6 +45,8 @@ impl BufPool {
     /// The initial capacity for `live`. git fast-import uses a fixed capacity
     /// of 100.
     const INIT_LIVE_CAPACITY: usize = 128;
+    /// The initial capacity for `aux`.
+    const INIT_AUX_CAPACITY: usize = 16;
     /// The initial capacity for `free`.
     const INIT_FREE_CAPACITY: usize = 128;
     /// The maximum capacity of a buffer. The pool is used for primarily short
@@ -56,6 +61,7 @@ impl BufPool {
         BufPool {
             inner: UnsafeCell::new(BufPoolInner {
                 live: VecDeque::with_capacity(Self::INIT_LIVE_CAPACITY),
+                aux: Vec::with_capacity(Self::INIT_AUX_CAPACITY),
                 free: Vec::with_capacity(Self::INIT_FREE_CAPACITY),
             }),
         }
@@ -80,14 +86,29 @@ impl BufPool {
         pool.live.back().map(Vec::as_slice)
     }
 
+    /// Gets an empty auxiliary buffer. Initialization of the returned `Vec` is
+    /// performed by the caller and a slice of it is stable until the next call
+    /// to [`BufPool::truncate_back`].
+    pub fn new_aux_buffer(&self) -> &mut Vec<u8> {
+        let pool = unsafe { &mut *self.inner.get() };
+        let mut buf = pool.free.pop().unwrap_or_default();
+        buf.clear();
+        pool.aux.push(buf);
+        pool.aux.last_mut().unwrap()
+    }
+
     /// Truncates the pool to only the latest `len` elements.
     pub fn truncate_back(&mut self, len: usize) {
         let pool = self.inner.get_mut();
+        let live_remove = pool.live.len().saturating_sub(len);
+        let additional = live_remove.saturating_add(pool.aux.len());
         pool.free
-            .reserve(len.min(Self::MAX_FREE_CAPACITY - pool.free.len()));
-        while pool.live.len() > len {
-            let buf = pool.live.pop_front().unwrap();
-            if pool.free.len() < Self::MAX_FREE_CAPACITY && buf.len() <= Self::MAX_BUF_CAPACITY {
+            .reserve(additional.min(Self::MAX_FREE_CAPACITY - pool.free.len()));
+        for buf in pool.live.drain(..live_remove).chain(pool.aux.drain(..)) {
+            if pool.free.len() >= pool.free.capacity() {
+                break;
+            }
+            if buf.len() <= Self::MAX_BUF_CAPACITY {
                 pool.free.push(buf);
             }
         }

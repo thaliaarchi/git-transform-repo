@@ -57,6 +57,14 @@ pub(super) trait DirectiveParser<R: BufRead> {
     fn skip_optional_lf(&self) -> PResult<()> {
         self.input().skip_optional_lf()
     }
+
+    #[inline(always)]
+    fn new_aux_buffer<'a>(&'a self) -> &'a mut Vec<u8>
+    where
+        R: 'a,
+    {
+        self.input().lines.new_aux_buffer()
+    }
 }
 
 impl<R: BufRead> Input<R> {
