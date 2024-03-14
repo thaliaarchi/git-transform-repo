@@ -21,7 +21,7 @@ pub enum Command<'a, B, R> {
     Tag(Tag<B>),
     Reset(Reset<B>),
     Ls(Ls<B>),
-    CatBlob(CatBlob),
+    CatBlob(CatBlob<B>),
     GetMark(GetMark),
     Checkpoint,
     Done(Done),
@@ -109,10 +109,14 @@ pub struct Ls<B> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CatBlob;
+pub struct CatBlob<B> {
+    pub blob: Blobish<B>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GetMark;
+pub struct GetMark {
+    pub mark: Mark,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Done {
@@ -271,6 +275,9 @@ pub struct OriginalOid<B> {
     pub oid: B,
 }
 
+// TODO: The distinction between Objectish, Commitish, Blobish, and Treeish is
+// fuzzy.
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Objectish<B> {
     Mark(Mark),
@@ -281,6 +288,12 @@ pub enum Objectish<B> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commitish<B> {
     pub commit: Objectish<B>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Blobish<B> {
+    Mark(Mark),
+    Oid(B),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -412,7 +425,7 @@ impl<'a, T, U, R> MapBytes<T, U> for Command<'a, T, R> {
             Command::Tag(tag) => Command::Tag(tag.map_bytes(f)),
             Command::Reset(reset) => Command::Reset(reset.map_bytes(f)),
             Command::Ls(ls) => Command::Ls(ls.map_bytes(f)),
-            Command::CatBlob(cat_blob) => Command::CatBlob(cat_blob),
+            Command::CatBlob(cat_blob) => Command::CatBlob(cat_blob.map_bytes(f)),
             Command::GetMark(get_mark) => Command::GetMark(get_mark),
             Command::Checkpoint => Command::Checkpoint,
             Command::Done(done) => Command::Done(done),
@@ -493,6 +506,17 @@ impl<T, U> MapBytes<T, U> for Ls<T> {
         Ls {
             root: self.root.map_bytes(f),
             path: f(self.path),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for CatBlob<T> {
+    type Output = CatBlob<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        CatBlob {
+            blob: self.blob.map_bytes(f),
         }
     }
 }
@@ -664,6 +688,18 @@ impl<T, U> MapBytes<T, U> for Commitish<T> {
     fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
         Commitish {
             commit: self.commit.map_bytes(f),
+        }
+    }
+}
+
+impl<T, U> MapBytes<T, U> for Blobish<T> {
+    type Output = Blobish<U>;
+
+    #[inline(always)]
+    fn map_bytes<F: FnMut(T) -> U>(self, f: &mut F) -> Self::Output {
+        match self {
+            Blobish::Mark(mark) => Blobish::Mark(mark),
+            Blobish::Oid(oid) => Blobish::Oid(f(oid)),
         }
     }
 }

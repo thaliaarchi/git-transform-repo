@@ -5,7 +5,7 @@ command ::=
     | reset
     | ls
     | cat_blob
-    | "get-mark " get_mark
+    | "get-mark " mark_ref SEP
     | "checkpoint" SEP
     | "done" SEP
     | alias
@@ -92,7 +92,8 @@ path_unquoted ::= [^\"\n] NOT_LF_NUL*
 string ::= "\"" ([^"\\\0] | "\\" ([abfnrtv"\\] | [0-3][0-7][0-7]))* "\""
 
 cat_blob ::=
-    "cat-blob " …
+    "cat-blob " blobish SEP
+blobish ::= mark_ref | oid_hex
 
 alias ::=
     # TODO: This optional LF is at the start of the command in fast-import.c,

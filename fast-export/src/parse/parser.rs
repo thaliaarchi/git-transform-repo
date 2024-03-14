@@ -15,9 +15,10 @@ use thiserror::Error;
 
 use crate::{
     command::{
-        Alias, Blob, Branch, Command, Commit, Commitish, DataHeader, DateFormat, Done, Encoding,
-        FastImportPath, Feature, FileSize, Ls, Mark, Objectish, OptionCommand, OptionGit,
-        OptionOther, OriginalOid, PersonIdent, Progress, Reset, Tag, TagName, Treeish, UnitFactor,
+        Alias, Blob, Blobish, Branch, CatBlob, Command, Commit, Commitish, DataHeader, DateFormat,
+        Done, Encoding, FastImportPath, Feature, FileSize, GetMark, Ls, Mark, Objectish,
+        OptionCommand, OptionGit, OptionOther, OriginalOid, PersonIdent, Progress, Reset, Tag,
+        TagName, Treeish, UnitFactor,
     },
     parse::{BufInput, DataReaderError, DataState, DirectiveParser, PResult, ParseStringError},
 };
@@ -372,13 +373,16 @@ impl<R: BufRead> Parser<R> {
     }
 
     // Corresponds to `parse_cat_blob` in fast-import.c.
-    fn parse_cat_blob<'a>(&'a self, _data_ref: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
-        todo!()
+    fn parse_cat_blob<'a>(&'a self, data_ref: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
+        let blob = Blobish::parse(data_ref)?;
+        Ok(Command::CatBlob(CatBlob { blob }))
     }
 
     // Corresponds to `parse_get_mark` in fast-import.c.
-    fn parse_get_mark<'a>(&'a self, _mark: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
-        todo!()
+    fn parse_get_mark<'a>(&'a self, mark: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
+        // TODO: :0 is not forbidden by fast-import. How would it behave?
+        let mark = Mark::parse(mark)?;
+        Ok(Command::GetMark(GetMark { mark }))
     }
 
     // Corresponds to `parse_checkpoint` in fast-import.c.
@@ -532,6 +536,18 @@ impl<'a> Commitish<&'a [u8]> {
         // front-end?
         // Only commits are allowed.
         Objectish::parse(commitish).map(|objectish| Commitish { commit: objectish })
+    }
+}
+
+impl<'a> Blobish<&'a [u8]> {
+    // Corresponds to part of `parse_cat_blob` in fast-import.c.
+    fn parse(blobish: &'a [u8]) -> PResult<Self> {
+        // TODO: Parse oids.
+        if blobish.starts_with(b":") {
+            Mark::parse(blobish).map(Blobish::Mark)
+        } else {
+            Ok(Blobish::Oid(blobish))
+        }
     }
 }
 
