@@ -331,45 +331,11 @@ impl<R: BufRead> Parser<R> {
 
     // Corresponds to `parse_ls(p, NULL)` in fast-import.c.
     fn parse_ls<'a>(&'a self, args: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
-        let (root, path) = self.parse_ls_(args, false)?;
+        let (root, path) = parse_ls(self, args, false)?;
         Ok(Command::Ls(Ls {
             root: root.unwrap(),
             path,
         }))
-    }
-
-    // Corresponds to `parse_ls` in fast-import.c.
-    fn parse_ls_<'a>(
-        &'a self,
-        args: &'a [u8],
-        in_commit: bool,
-    ) -> PResult<(Option<Treeish<&'a [u8]>>, &'a [u8])> {
-        if args.is_empty() {
-            return Err(ParseError::MissingLsPath.into());
-        }
-        let (root, mut path) = if args[0] == b'"' {
-            if !in_commit {
-                return Err(ParseError::MissingLsRoot.into());
-            }
-            (None, args)
-        } else {
-            let i = memchr(b' ', args).ok_or(ParseError::MissingLsPath)?;
-            let (root, path) = args.split_at(i);
-            (Some(Treeish::parse(root)?), path)
-        };
-        if path.is_empty() {
-            return Err(ParseError::MissingLsPath.into());
-        }
-        if path[0] == b'"' {
-            let rest;
-            (path, rest) = self
-                .unquote_c_style_string(path)
-                .map_err(ParseError::LsPathString)?;
-            if !rest.is_empty() {
-                return Err(ParseError::JunkAfterLsPath.into());
-            }
-        }
-        Ok((root, path))
     }
 
     // Corresponds to `parse_cat_blob` in fast-import.c.
@@ -541,7 +507,7 @@ impl<'a> Commitish<&'a [u8]> {
 
 impl<'a> Blobish<&'a [u8]> {
     // Corresponds to part of `parse_cat_blob` in fast-import.c.
-    fn parse(blobish: &'a [u8]) -> PResult<Self> {
+    pub(super) fn parse(blobish: &'a [u8]) -> PResult<Self> {
         // TODO: Parse oids.
         if blobish.starts_with(b":") {
             Mark::parse(blobish).map(Blobish::Mark)
@@ -718,6 +684,40 @@ impl<'a> FastImportPath<&'a [u8]> {
         // TODO: Make method to resolve the full path.
         Ok(FastImportPath { path })
     }
+}
+
+// Corresponds to `parse_ls` in fast-import.c.
+pub(super) fn parse_ls<'a, P: DirectiveParser<R>, R: BufRead + 'a>(
+    parser: &'a P,
+    args: &'a [u8],
+    in_commit: bool,
+) -> PResult<(Option<Treeish<&'a [u8]>>, &'a [u8])> {
+    if args.is_empty() {
+        return Err(ParseError::MissingLsPath.into());
+    }
+    let (root, mut path) = if args[0] == b'"' {
+        if !in_commit {
+            return Err(ParseError::MissingLsRoot.into());
+        }
+        (None, args)
+    } else {
+        let i = memchr(b' ', args).ok_or(ParseError::MissingLsPath)?;
+        let (root, path) = args.split_at(i);
+        (Some(Treeish::parse(root)?), path)
+    };
+    if path.is_empty() {
+        return Err(ParseError::MissingLsPath.into());
+    }
+    if path[0] == b'"' {
+        let rest;
+        (path, rest) = parser
+            .unquote_c_style_string(path)
+            .map_err(ParseError::LsPathString)?;
+        if !rest.is_empty() {
+            return Err(ParseError::JunkAfterLsPath.into());
+        }
+    }
+    Ok((root, path))
 }
 
 // Corresponds to `option_rewrite_submodules` in fast-import.c.
