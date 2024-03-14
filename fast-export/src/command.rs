@@ -751,3 +751,87 @@ impl<T, U> MapBytes<T, U> for DataHeader<T> {
         }
     }
 }
+
+impl<'a, B, R> From<Blob<'a, B, R>> for Command<'a, B, R> {
+    #[inline(always)]
+    fn from(blob: Blob<'a, B, R>) -> Self {
+        Command::Blob(blob)
+    }
+}
+
+impl<B, R> From<Commit<B>> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(commit: Commit<B>) -> Self {
+        Command::Commit(commit)
+    }
+}
+
+impl<B, R> From<Tag<B>> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(tag: Tag<B>) -> Self {
+        Command::Tag(tag)
+    }
+}
+
+impl<B, R> From<Reset<B>> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(reset: Reset<B>) -> Self {
+        Command::Reset(reset)
+    }
+}
+
+impl<B, R> From<Ls<B>> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(ls: Ls<B>) -> Self {
+        Command::Ls(ls)
+    }
+}
+
+impl<B, R> From<CatBlob<B>> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(cat_blob: CatBlob<B>) -> Self {
+        Command::CatBlob(cat_blob)
+    }
+}
+
+impl<B, R> From<GetMark> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(get_mark: GetMark) -> Self {
+        Command::GetMark(get_mark)
+    }
+}
+
+impl<B, R> From<Done> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(done: Done) -> Self {
+        Command::Done(done)
+    }
+}
+
+impl<B, R> From<Alias<B>> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(alias: Alias<B>) -> Self {
+        Command::Alias(alias)
+    }
+}
+
+impl<B, R> From<Progress<B>> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(progress: Progress<B>) -> Self {
+        Command::Progress(progress)
+    }
+}
+
+impl<B, R> From<Feature<B>> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(feature: Feature<B>) -> Self {
+        Command::Feature(feature)
+    }
+}
+
+impl<B, R> From<OptionCommand<B>> for Command<'_, B, R> {
+    #[inline(always)]
+    fn from(option: OptionCommand<B>) -> Self {
+        Command::Option(option)
+    }
+}
