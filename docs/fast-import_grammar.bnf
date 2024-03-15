@@ -5,31 +5,31 @@ command ::=
     | reset
     | ls
     | cat_blob
-    | "get-mark " mark_ref SEP
-    | "checkpoint" SEP
-    | "done" SEP
+    | "get-mark " mark_ref EOL
+    | "checkpoint" EOL
+    | "done" EOL
     | alias
-    | "progress " NOT_LF_ONLY* LF? SEP
-    | "feature " feature SEP
-    | "option git " option_git SEP
-    | "option " NOT_LF* SEP
+    | "progress " NOT_LF_ONLY* LF? EOL
+    | "feature " feature EOL
+    | "option git " option_git EOL
+    | "option " NOT_LF* EOL
 
 blob ::=
-    "blob" SEP
+    "blob" EOL
     mark?
     original_oid?
     data_large
 
 commit ::=
-    "commit " branch SEP
+    "commit " branch EOL
     mark?
     original_oid?
-    ("author " person_ident SEP)?
-    "committer " person_ident SEP
-    ("encoding " NOT_LF_NUL* SEP)?
+    ("author " person_ident EOL)?
+    "committer " person_ident EOL
+    ("encoding " NOT_LF_NUL* EOL)?
     data_small
-    ("from " commitish SEP)?
-    ("merge " commitish SEP)*
+    ("from " commitish EOL)?
+    ("merge " commitish EOL)*
     (file_modify | file_delete | file_rename | file_copy | note_modify |
         file_deleteall | commit_ls | cat_blob)*
     LF?
@@ -46,17 +46,17 @@ commitish ::= objectish
 file_modify ::=
     "M " mode " " (file_modify_external | file_modify_inline)
 file_delete ::=
-    "D " change_path SEP
+    "D " change_path EOL
 file_rename ::=
-    "R " change_path " " change_path_eol SEP
+    "R " change_path " " change_path_eol EOL
 file_copy ::=
-    "C " change_path " " change_path_eol SEP
+    "C " change_path " " change_path_eol EOL
 note_modify ::=
     "N " …
 file_deleteall ::= "deleteall"
 commit_ls ::=
     | ls
-    | "ls " path_quoted SEP
+    | "ls " path_quoted EOL
 mode ::= [0-7]+
 file_modify_external ::=
     mark_ref " " …
@@ -70,27 +70,27 @@ change_path ::= string | [^\n\0 ]*
 change_path_eol ::= string | [^\n\0]*
 
 tag ::=
-    "tag " tag_name SEP
+    "tag " tag_name EOL
     mark?
-    "from " objectish SEP
+    "from " objectish EOL
     original_oid?
     # BUG: `tagger` is optional in fast-import.c, but required in the
     # fast-import docs.
-    "tagger " person_ident SEP
+    "tagger " person_ident EOL
     data_small
 # BUG: Name can contain NUL, but its copy is NUL-terminated.
 # BUG: Empty name is seemingly allowed.
 tag_name ::= NOT_LF_NUL
 
 reset ::=
-    "reset " branch SEP
-    ("from " commitish SEP)?
+    "reset " branch EOL
+    ("from " commitish EOL)?
     # BUG: fast-import docs include LF?, but fast-import.c doesn't seem to.
 
 ls ::=
     # This path is a quoted string when the first character is '"' and literal
     # bytes otherwise. This is different from the path in commit changes.
-    "ls " treeish " " (path_quoted | path_unquoted) SEP
+    "ls " treeish " " (path_quoted | path_unquoted) EOL
 treeish ::= mark_ref | oid_hex
 oid_hex ::= …
 path_quoted ::= string
@@ -99,20 +99,20 @@ path_unquoted ::= [^\"\n] NOT_LF_NUL*
 string ::= "\"" ([^"\\\0] | "\\" ([abfnrtv"\\] | [0-3][0-7][0-7]))* "\""
 
 cat_blob ::=
-    "cat-blob " blobish SEP
+    "cat-blob " blobish EOL
 blobish ::= mark_ref | oid_hex
 
 alias ::=
     # TODO: This optional LF is at the start of the command in fast-import.c,
     # but at the end in the fast-import docs.
-    "alias" LF? SEP
+    "alias" LF? EOL
     mark
-    "to " commitish SEP
+    "to " commitish EOL
 
 # The mark is 0 when this line is omitted.
-mark ::= "mark " mark_ref SEP
+mark ::= "mark " mark_ref EOL
 mark_ref ::= ":" int
-original_oid ::= "original-oid " NOT_LF_ONLY* SEP
+original_oid ::= "original-oid " NOT_LF_ONLY* EOL
 
 # Supports files larger than the configured --max-pack-size, when using the the
 # length-prefixed syntax.
@@ -187,7 +187,7 @@ uint ::= "+"? [0-9]+
 unit_factor ::= [kKmMgG]?
 file_size ::= uint unit_factor
 
-SEP ::= LF COMMENTS
+EOL ::= LF COMMENTS
 COMMENTS ::= ("#" NOT_LF* (LF | EOF))*
 LF ::= "\n"
 NOT_LF ::= [^\n\0] # TODO review all uses
