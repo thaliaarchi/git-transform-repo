@@ -110,6 +110,15 @@ pub enum ParseError {
     #[error("rewrite submodules feature contains NUL")]
     RewriteSubmodulesContainsNul,
 
+    #[error("junk after path in commit 'D'")]
+    JunkAfterFileDeletePath,
+    #[error("missing space after source path")]
+    MissingSpaceAfterSource,
+    #[error("missing destination path")]
+    MissingDest,
+    #[error("junk after destination path")]
+    JunkAfterDest,
+
     #[error("person identifier does not have '<' or '>'")]
     IdentNoLtOrGt,
     #[error("person identifier does not have '<' before '>'")]

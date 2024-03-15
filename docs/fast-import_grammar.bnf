@@ -46,22 +46,28 @@ commitish ::= objectish
 file_modify ::=
     "M " mode " " (file_modify_external | file_modify_inline)
 file_delete ::=
-    "D " …
+    "D " change_path SEP
 file_rename ::=
-    "R " …
+    "R " change_path " " change_path_eol SEP
 file_copy ::=
-    "C " …
+    "C " change_path " " change_path_eol SEP
 note_modify ::=
     "N " …
 file_deleteall ::= "deleteall"
+commit_ls ::=
+    | ls
+    | "ls " path_quoted SEP
 mode ::= [0-7]+
 file_modify_external ::=
     mark_ref " " …
 file_modify_inline ::=
     "inline " …
-commit_ls ::=
-    | ls
-    | "ls " path_quoted SEP
+# This path is a quoted string, when it parses without errors, and literal bytes
+# otherwise.
+# BUG: This is different from the path in `ls`.
+change_path ::= string | [^\n\0 ]*
+# BUG: Paths at the end of a line may contain space.
+change_path_eol ::= string | [^\n\0]*
 
 tag ::=
     "tag " tag_name SEP
@@ -82,6 +88,8 @@ reset ::=
     # BUG: fast-import docs include LF?, but fast-import.c doesn't seem to.
 
 ls ::=
+    # This path is a quoted string when the first character is '"' and literal
+    # bytes otherwise. This is different from the path in commit changes.
     "ls " treeish " " (path_quoted | path_unquoted) SEP
 treeish ::= mark_ref | oid_hex
 oid_hex ::= …

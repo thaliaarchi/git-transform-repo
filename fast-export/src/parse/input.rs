@@ -341,6 +341,22 @@ impl<R: BufRead> BufInput<R> {
         *unread = false;
     }
 
+    /// Marks the last-read directive as unread. `unread_directive` must be
+    /// preceded by `read_directive` or `bump_directive`.
+    #[inline(always)]
+    pub fn unread_directive(&self) {
+        let unread = unsafe { &mut *self.unread.get() };
+        #[cfg(debug_assertions)]
+        {
+            let input = unsafe { &*self.input.get() };
+            debug_assert!(
+                !*unread && !input.eof,
+                "unread_directive not preceded by bump_directive",
+            );
+        }
+        *unread = true;
+    }
+
     pub fn parse_directive<'a, F, T>(&'a self, prefix: &[u8], parse: F) -> PResult<Option<T>>
     where
         F: FnOnce(&'a [u8]) -> PResult<T>,
