@@ -14,29 +14,44 @@ pub struct ChangeIter<'a, R> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change<B> {
-    FileModify {
-        data_ref: DataRef<B>,
-        mode: Mode,
-        path: B,
-    },
-    FileDelete {
-        path: B,
-    },
-    FileRename {
-        source: B,
-        dest: B,
-    },
-    FileCopy {
-        source: B,
-        dest: B,
-    },
+    FileModify(FileModifyChange<B>),
+    FileDelete(FileDeleteChange<B>),
+    FileRename(FileRenameChange<B>),
+    FileCopy(FileCopyChange<B>),
     FileDeleteAll,
-    NoteModify {
-        data_ref: DataRef<B>,
-        commit: Commitish<B>,
-    },
+    NoteModify(NoteModifyChange<B>),
     Ls(CommitLs<B>),
     CatBlob(CatBlob<B>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileModifyChange<B> {
+    data_ref: DataRef<B>,
+    mode: Mode,
+    path: B,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDeleteChange<B> {
+    path: B,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileRenameChange<B> {
+    source: B,
+    dest: B,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileCopyChange<B> {
+    source: B,
+    dest: B,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NoteModifyChange<B> {
+    data_ref: DataRef<B>,
+    commit: Commitish<B>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,11 +113,11 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
         // TODO: Emit `cat-blob` commands before the modify.
         // TODO: Parse data.
 
-        Ok(Change::FileModify {
+        Ok(Change::from(FileModifyChange {
             data_ref,
             mode,
             path,
-        })
+        }))
     }
 
     // Corresponds to `file_change_d` in fast-import.c.
@@ -110,19 +125,19 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
         let path = self
             .unquote_eol(path)
             .ok_or(ParseError::JunkAfterFileDeletePath)?;
-        Ok(Change::FileDelete { path })
+        Ok(Change::from(FileDeleteChange { path }))
     }
 
     // Corresponds to `file_change_cr(s, b, 1)` in fast-import.c.
     fn parse_file_rename(&'a self, paths: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let (source, dest) = self.parse_file_rename_copy(paths)?;
-        Ok(Change::FileRename { source, dest })
+        Ok(Change::from(FileRenameChange { source, dest }))
     }
 
     // Corresponds to `file_change_cr(s, b, 0)` in fast-import.c.
     fn parse_file_copy(&'a self, paths: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let (source, dest) = self.parse_file_rename_copy(paths)?;
-        Ok(Change::FileCopy { source, dest })
+        Ok(Change::from(FileCopyChange { source, dest }))
     }
 
     // Corresponds to `file_change_cr` in fast-import.c.
@@ -150,19 +165,19 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
 
         // TODO: Parse data.
 
-        Ok(Change::NoteModify { data_ref, commit })
+        Ok(Change::from(NoteModifyChange { data_ref, commit }))
     }
 
     // Corresponds to `parse_ls(p, b)` in fast-import.c.
     fn parse_ls(&'a self, args: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let (root, path) = parse_ls(self, args, true)?;
-        Ok(Change::Ls(CommitLs { root, path }))
+        Ok(Change::from(CommitLs { root, path }))
     }
 
     // Corresponds to `parse_cat_blob` in fast-import.c.
     fn parse_cat_blob(&'a self, data_ref: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let blob = Blobish::parse(data_ref)?;
-        Ok(Change::CatBlob(CatBlob { blob }))
+        Ok(Change::from(CatBlob { blob }))
     }
 
     /// Returns `None` when the string is not followed by a space.
@@ -221,4 +236,53 @@ fn split_at_space(b: &[u8]) -> Option<(&[u8], &[u8])> {
         let (b1, b2) = b.split_at(i);
         (b1, &b2[1..])
     })
+}
+
+impl<B> From<FileModifyChange<B>> for Change<B> {
+    #[inline(always)]
+    fn from(change: FileModifyChange<B>) -> Self {
+        Change::FileModify(change)
+    }
+}
+
+impl<B> From<FileDeleteChange<B>> for Change<B> {
+    #[inline(always)]
+    fn from(change: FileDeleteChange<B>) -> Self {
+        Change::FileDelete(change)
+    }
+}
+
+impl<B> From<FileRenameChange<B>> for Change<B> {
+    #[inline(always)]
+    fn from(change: FileRenameChange<B>) -> Self {
+        Change::FileRename(change)
+    }
+}
+
+impl<B> From<FileCopyChange<B>> for Change<B> {
+    #[inline(always)]
+    fn from(change: FileCopyChange<B>) -> Self {
+        Change::FileCopy(change)
+    }
+}
+
+impl<B> From<NoteModifyChange<B>> for Change<B> {
+    #[inline(always)]
+    fn from(change: NoteModifyChange<B>) -> Self {
+        Change::NoteModify(change)
+    }
+}
+
+impl<B> From<CommitLs<B>> for Change<B> {
+    #[inline(always)]
+    fn from(change: CommitLs<B>) -> Self {
+        Change::Ls(change)
+    }
+}
+
+impl<B> From<CatBlob<B>> for Change<B> {
+    #[inline(always)]
+    fn from(change: CatBlob<B>) -> Self {
+        Change::CatBlob(change)
+    }
 }

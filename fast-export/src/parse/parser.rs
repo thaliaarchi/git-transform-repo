@@ -227,7 +227,7 @@ impl<R: BufRead> Parser<R> {
 
         self.input.truncate_context();
         let Some(line) = self.input.next_directive()? else {
-            return Ok(Command::Done(Done::Eof));
+            return Ok(Command::from(Done::Eof));
         };
 
         if line == b"blob" {
@@ -247,7 +247,7 @@ impl<R: BufRead> Parser<R> {
         } else if line == b"checkpoint" {
             self.parse_checkpoint()
         } else if line == b"done" {
-            Ok(Command::Done(Done::Explicit))
+            Ok(Command::from(Done::Explicit))
         } else if line == b"alias" {
             self.parse_alias()
         } else if let Some(message) = line.strip_prefix(b"progress ") {
@@ -274,7 +274,7 @@ impl<R: BufRead> Parser<R> {
         let data_state = unsafe { &mut *self.data_state.get() };
         data_state.init(&data_header, &self.data_opened);
 
-        Ok(Command::Blob(Blob {
+        Ok(Command::from(Blob {
             mark,
             original_oid,
             data_header,
@@ -298,7 +298,7 @@ impl<R: BufRead> Parser<R> {
         let from = self.parse_directive(b"from ", Commitish::parse)?;
         let merge = self.parse_directive_many(b"merge ", Commitish::parse)?;
 
-        Ok(Command::Commit(Commit {
+        Ok(Command::from(Commit {
             branch,
             mark,
             original_oid,
@@ -327,7 +327,7 @@ impl<R: BufRead> Parser<R> {
             .parse_data_small()?
             .ok_or(ParseError::ExpectedTagMessage)?;
 
-        Ok(Command::Tag(Tag {
+        Ok(Command::from(Tag {
             name,
             mark,
             from,
@@ -345,13 +345,13 @@ impl<R: BufRead> Parser<R> {
         // TODO: fast-import docs include an optional LF, but fast-import.c
         // doesn't seem to.
 
-        Ok(Command::Reset(Reset { branch, from }))
+        Ok(Command::from(Reset { branch, from }))
     }
 
     // Corresponds to `parse_ls(p, NULL)` in fast-import.c.
     fn parse_ls<'a>(&'a self, args: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         let (root, path) = parse_ls(self, args, false)?;
-        Ok(Command::Ls(Ls {
+        Ok(Command::from(Ls {
             root: root.unwrap(),
             path,
         }))
@@ -360,14 +360,14 @@ impl<R: BufRead> Parser<R> {
     // Corresponds to `parse_cat_blob` in fast-import.c.
     fn parse_cat_blob<'a>(&'a self, data_ref: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         let blob = Blobish::parse(data_ref)?;
-        Ok(Command::CatBlob(CatBlob { blob }))
+        Ok(Command::from(CatBlob { blob }))
     }
 
     // Corresponds to `parse_get_mark` in fast-import.c.
     fn parse_get_mark<'a>(&'a self, mark: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         // TODO: :0 is not forbidden by fast-import. How would it behave?
         let mark = Mark::parse(mark)?;
-        Ok(Command::GetMark(GetMark { mark }))
+        Ok(Command::from(GetMark { mark }))
     }
 
     // Corresponds to `parse_checkpoint` in fast-import.c.
@@ -388,18 +388,18 @@ impl<R: BufRead> Parser<R> {
             .parse_directive(b"to ", Commitish::parse)?
             .ok_or(ParseError::ExpectedAliasTo)?;
 
-        Ok(Command::Alias(Alias { mark, to }))
+        Ok(Command::from(Alias { mark, to }))
     }
 
     // Corresponds to `parse_progress` in fast-import.c.
     fn parse_progress<'a>(&'a self, message: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         self.input.skip_optional_lf()?;
-        Ok(Command::Progress(Progress { message }))
+        Ok(Command::from(Progress { message }))
     }
 
     // Corresponds to `parse_feature` in fast-import.c.
     fn parse_feature<'a>(&'a self, feature: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
-        Ok(Command::Feature(Feature::parse(feature)?))
+        Ok(Command::from(Feature::parse(feature)?))
     }
 
     // Corresponds to `parse_option` in fast-import.c.
@@ -409,7 +409,7 @@ impl<R: BufRead> Parser<R> {
         } else {
             OptionCommand::Other(OptionOther { option })
         };
-        Ok(Command::Option(option))
+        Ok(Command::from(option))
     }
 
     /// Parses a `data` directive and reads its contents into memory. git
