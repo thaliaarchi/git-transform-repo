@@ -104,6 +104,10 @@ This wouldn't need to be folded into git-transform-repo, since it would emit a
 fast-export stream. However, if fast-export-rust makes it easy to publish a tool
 as as a binary and library, it could be plugged in directly.
 
+Git has a few small utilities that generate fast-export streams for tars, zips,
+and versioned directories in [contrib/fast-import](https://git.kernel.org/pub/scm/git/git.git/tree/contrib/fast-import).
+These would be easy to replace.
+
 ### Other VCSes
 
 It may be worth porting hg-fast-export for stability and control, as I ran into

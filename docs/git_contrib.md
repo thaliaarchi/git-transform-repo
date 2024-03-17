@@ -2,6 +2,8 @@
 
 ## fast-import parsing hardening
 
+### Integer parsing
+
 Every single usage of `strto*` in fast-import misses some error handling. Here
 are the cases I've identified:
 
@@ -9,12 +11,23 @@ are the cases I've identified:
 2. Unchecked end bound, allowing junk after number
 3. Allowing an unintended extra sign (i.e., `+` for `strtou*` and `+`/`-` for
    `strto*`)
+4. Overrunning NUL
+
+### Path parsing
+
+Paths are parsed in four ways by fast-import and do not handle all parse errors.
+See [parsing discrepancies](./parsing_discrepancies.md).
+
+### Truncating strings at NUL
 
 Many places do not fully consider NUL and assume they are working with regular,
 NUL-terminated strings. `read_next_command` (via `strbuf_getline_lf`) reads an
 LF-terminated string, and stores it in a buffer with a length.
 
-4. Overrunning NUL
+### `strbuf` memory leaks
+
+`strbuf`s, such as those created for unquoting strings with `unquote_c_style`,
+do not seem to free their buffers.
 
 ## Docs
 
@@ -26,3 +39,5 @@ fast-import docs:
 
 `feature` is missing `alias`, `rewrite-submodules-to`, and
 `rewrite-submodules-from`.
+
+Upstream consistent command/directive/line terminology.
