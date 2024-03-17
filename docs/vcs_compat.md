@@ -62,7 +62,8 @@ and is detailed here:
     lines when an unrecognized directive is encountered or an optional LF. A
     line of only Unicode spaces is skipped.
   - `ls` and `cat-blob` are not supported in the changes list.
-  - Bug: All fields in changes can be quoted.
+  - Bug: All fields in changes can be quoted. Unquoting in `stringScan` has the
+    wrong escapes from using Go `strconv.Unquote`.
 - `tag` command:
   - Extension: `#legacy-id' SP <legacy-id> LF` directive. Appears first.
   - `mark` directive is not supported.
