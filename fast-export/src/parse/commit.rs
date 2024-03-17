@@ -1,9 +1,9 @@
-use std::io::BufRead;
+use std::{io::BufRead, str};
 
 use memchr::memchr;
 
 use crate::{
-    command::{Blobish, CatBlob, Treeish},
+    command::{Blobish, CatBlob, Commitish, Mark, Mode, Treeish},
     parse::{parse_ls, BufInput, DirectiveParser, PResult, ParseError},
 };
 
@@ -14,14 +14,36 @@ pub struct ChangeIter<'a, R> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change<B> {
-    FileModify,
-    FileDelete { path: B },
-    FileRename { source: B, dest: B },
-    FileCopy { source: B, dest: B },
+    FileModify {
+        data_ref: DataRef<B>,
+        mode: Mode,
+        path: B,
+    },
+    FileDelete {
+        path: B,
+    },
+    FileRename {
+        source: B,
+        dest: B,
+    },
+    FileCopy {
+        source: B,
+        dest: B,
+    },
     FileDeleteAll,
-    NoteModify,
+    NoteModify {
+        data_ref: DataRef<B>,
+        commit: Commitish<B>,
+    },
     Ls(CommitLs<B>),
     CatBlob(CatBlob<B>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DataRef<B> {
+    Mark(Mark),
+    Oid(B),
+    Inline,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,8 +82,27 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
     }
 
     // Corresponds to `file_change_m` in fast-import.c.
-    fn parse_file_modify(&'a self, _args: &'a [u8]) -> PResult<Change<&'a [u8]>> {
-        todo!()
+    fn parse_file_modify(&'a self, args: &'a [u8]) -> PResult<Change<&'a [u8]>> {
+        let (mode, rest) = split_at_space(args).ok_or(ParseError::NoSpaceAfterMode)?;
+        // SAFETY: `from_str_radix` operates on bytes and accepts only ASCII.
+        let mode = u16::from_str_radix(unsafe { str::from_utf8_unchecked(mode) }, 8)
+            .map_err(|_| ParseError::InvalidModeInt)?;
+        let mode = Mode::try_from(mode).map_err(|_| ParseError::InvalidMode)?;
+
+        let (data_ref, path) = split_at_space(rest).ok_or(ParseError::NoSpaceAfterDataRef)?;
+        let data_ref = DataRef::parse(data_ref)?;
+        let path = self
+            .unquote_eol(path)
+            .ok_or(ParseError::JunkAfterFileModifyPath)?;
+
+        // TODO: Emit `cat-blob` commands before the modify.
+        // TODO: Parse data.
+
+        Ok(Change::FileModify {
+            data_ref,
+            mode,
+            path,
+        })
     }
 
     // Corresponds to `file_change_d` in fast-import.c.
@@ -88,7 +129,7 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
     fn parse_file_rename_copy(&'a self, paths: &'a [u8]) -> PResult<(&'a [u8], &'a [u8])> {
         let (source, dest) = self
             .unquote_space(paths)
-            .ok_or(ParseError::MissingSpaceAfterSource)?;
+            .ok_or(ParseError::NoSpaceAfterSource)?;
         if dest.is_empty() {
             return Err(ParseError::MissingDest.into());
         }
@@ -102,8 +143,14 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
     }
 
     // Corresponds to `note_change_n` in fast-import.c.
-    fn parse_note_modify(&'a self, _args: &'a [u8]) -> PResult<Change<&'a [u8]>> {
-        todo!()
+    fn parse_note_modify(&'a self, args: &'a [u8]) -> PResult<Change<&'a [u8]>> {
+        let (data_ref, commit) = split_at_space(args).ok_or(ParseError::NoSpaceAfterDataRef)?;
+        let data_ref = DataRef::parse(data_ref)?;
+        let commit = Commitish::parse(commit)?;
+
+        // TODO: Parse data.
+
+        Ok(Change::NoteModify { data_ref, commit })
     }
 
     // Corresponds to `parse_ls(p, b)` in fast-import.c.
@@ -128,11 +175,7 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
             }
             Some((unquoted, &rest[1..]))
         } else {
-            let Some(i) = memchr(b' ', s) else {
-                return None;
-            };
-            let (s, rest) = s.split_at(i);
-            Some((s, &rest[1..]))
+            split_at_space(s)
         }
     }
 
@@ -157,4 +200,25 @@ impl<R: BufRead> DirectiveParser<R> for ChangeIter<'_, R> {
     fn input(&self) -> &BufInput<R> {
         &self.input
     }
+}
+
+impl<'a> DataRef<&'a [u8]> {
+    // Corresponds to parts of `file_change_m` and `note_change_n` in
+    // fast-import.c.
+    fn parse(data_ref: &'a [u8]) -> PResult<Self> {
+        if data_ref == b"inline" {
+            Ok(DataRef::Inline)
+        } else if data_ref.starts_with(b":") {
+            Ok(DataRef::Mark(Mark::parse(data_ref)?))
+        } else {
+            Ok(DataRef::Oid(data_ref))
+        }
+    }
+}
+
+fn split_at_space(b: &[u8]) -> Option<(&[u8], &[u8])> {
+    memchr(b' ', b).map(|i| {
+        let (b1, b2) = b.split_at(i);
+        (b1, &b2[1..])
+    })
 }

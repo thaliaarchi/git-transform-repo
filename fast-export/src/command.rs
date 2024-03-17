@@ -275,6 +275,36 @@ pub struct OriginalOid<B> {
     pub oid: B,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    File = 0o100644,
+    Exe = 0o100755,
+    SymLink = 0o120000,
+    GitLink = 0o160000,
+    Dir = 0o040000,
+}
+
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
+#[error("invalid mode")]
+pub struct InvalidMode;
+
+impl TryFrom<u16> for Mode {
+    type Error = InvalidMode;
+
+    // Corresponds to part of `file_change_m` in fast-import.c.
+    fn try_from(mode: u16) -> Result<Self, Self::Error> {
+        // TODO: Should this be public or is the logic specific to fast-import?
+        match mode {
+            0o100644 | 0o644 => Ok(Mode::File),
+            0o100755 | 0o755 => Ok(Mode::Exe),
+            0o120000 => Ok(Mode::SymLink),
+            0o160000 => Ok(Mode::GitLink),
+            0o040000 => Ok(Mode::Dir),
+            _ => Err(InvalidMode),
+        }
+    }
+}
+
 // TODO: The distinction between Objectish, Commitish, Blobish, and Treeish is
 // fuzzy.
 

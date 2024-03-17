@@ -44,7 +44,10 @@ objectish ::= branch | mark_ref
 # An objectish restricted to commits
 commitish ::= objectish
 file_modify ::=
-    "M " mode " " (file_modify_external | file_modify_inline)
+    | "M " mode " " objectish " " path EOL
+    | "M " mode " inline " path EOL
+      cat_blob*
+      data_large
 file_delete ::=
     "D " change_path EOL
 file_rename ::=
@@ -52,16 +55,14 @@ file_rename ::=
 file_copy ::=
     "C " change_path " " change_path_eol EOL
 note_modify ::=
-    "N " …
+    | "N " objectish " " path EOL
+    | "N inline " path EOL
+      data_large
 file_deleteall ::= "deleteall"
 commit_ls ::=
     | ls
     | "ls " path_quoted EOL
 mode ::= [0-7]+
-file_modify_external ::=
-    mark_ref " " …
-file_modify_inline ::=
-    "inline " …
 # This path is a quoted string, when it parses without errors, and literal bytes
 # otherwise.
 # BUG: This is different from the path in `ls`.

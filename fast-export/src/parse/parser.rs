@@ -110,10 +110,20 @@ pub enum ParseError {
     #[error("rewrite submodules feature contains NUL")]
     RewriteSubmodulesContainsNul,
 
+    #[error("invalid mode integer")]
+    InvalidModeInt,
+    #[error("invalid mode")]
+    InvalidMode,
+    #[error("no space after mode")]
+    NoSpaceAfterMode,
+    #[error("no space after data ref")]
+    NoSpaceAfterDataRef,
+    #[error("junk after path in commit 'M'")]
+    JunkAfterFileModifyPath,
     #[error("junk after path in commit 'D'")]
     JunkAfterFileDeletePath,
     #[error("missing space after source path")]
-    MissingSpaceAfterSource,
+    NoSpaceAfterSource,
     #[error("missing destination path")]
     MissingDest,
     #[error("junk after destination path")]
@@ -135,7 +145,7 @@ pub enum ParseError {
     MarkMissingColon,
     /// The mark is not a valid integer. fast-import allows more forms of
     /// ill-formatted integers than here.
-    #[error("invalid mark")]
+    #[error("invalid mark integer")]
     InvalidMark,
     /// fast-import allows `mark :0`, but it 0 is used for when no mark has been
     /// set.
@@ -474,7 +484,7 @@ impl Mark {
     ///
     // Corresponds to `parse_mark` and `parse_mark_ref` in fast-import.c.
     #[inline]
-    fn parse(mark: &[u8]) -> PResult<Self> {
+    pub(super) fn parse(mark: &[u8]) -> PResult<Self> {
         let [b':', mark @ ..] = mark else {
             return Err(ParseError::MarkMissingColon.into());
         };
@@ -506,7 +516,7 @@ impl<'a> Objectish<&'a [u8]> {
 
 impl<'a> Commitish<&'a [u8]> {
     // Corresponds to `parse_objectish` and `parse_merge` in fast-import.c.
-    fn parse(commitish: &'a [u8]) -> PResult<Self> {
+    pub(super) fn parse(commitish: &'a [u8]) -> PResult<Self> {
         // TODO: How much of `parse_objectish` should be here or in the
         // front-end?
         // Only commits are allowed.
