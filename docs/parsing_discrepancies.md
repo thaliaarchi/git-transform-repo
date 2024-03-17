@@ -67,3 +67,11 @@ General:
 `ls-fail`:
 
 No particular notes.
+
+### bk fast-import
+
+- `filemodify`, `filedelete`, `filerename-src`, `filerename-dest`,
+  `filecopy-src`, `filecopy-dest`: If `<path>` starts with `"`, unquote it and
+  report parse errors; otherwise, treat it as literal bytes until the next SP.
+  (See [`parsePath`](https://github.com/bitkeeper-scm/bitkeeper/blob/0524ffb3f6f15ae8d3922b28da581f334475fe61/src/fast-import.c#L836).)
+- `ls`, `ls-commit`, `ls-out`, `ls-fail`: `ls` command is not supported.
