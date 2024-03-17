@@ -3,6 +3,41 @@
 Ideas for a git-filter-repo successor for advanced repo transformations. It aims
 to make iterative refinement of repo transformations easier.
 
+## Comparison to other tools
+
+I aim to unify the algorithmic speed and usability of git-fast-export with the
+complex transformations, DSL, and wide VCS support of Reposurgeon, while
+bringing in efficient, compiler-like processing and robustness.
+
+### git-filter-repo
+
+git-filter-repo has algorithmically efficient transformations and flexible
+extension, and it has driven many upstream improvements to Git.
+
+I am replicating the Python git-filter-repo API, with the internals rewritten
+with more efficient processing in Rust. Unlike git-filter-repo, I aim to support
+many VCSes besides just Git.
+
+### Reposurgeon
+
+Reposurgeon provides a DSL to express complex transformations on repos between
+many VCses.
+
+I didn't set out to do this, but I'm realizing git-transform-repo fulfills a
+niche that Reposurgeon can't solve!
+
+Reposurgeon parses the entire fast-export stream into memory, including every
+blob. Everything in the repo. That means you'd need a lot of memory to transform
+large repos, even though its input and output are streams.
+
+This approach would be useful, however, for iterative refinement of a
+transformation script. To start processing a repo, a daemon would load the repo
+into memory once and scripts would connect to it to perform transformations. I
+have not determined if Reposurgeon takes advantage of this possibility, as I
+have only yet reviewed its fast-import parsing code. This could further be
+combined with incremental computation like with Salsa or Adapton to yield highly
+efficient updates.
+
 ## Input repo
 
 filter-repo assumes that you start with a freshly cloned repo, and verifies that
@@ -24,11 +59,11 @@ opt-in by passing `--in-place` and, if it is not a fresh clone, `--force`.
 
 ## Front-ends
 
-### Piped fast-export streams
+### Fast-export streams
 
-filter-repo exposes no way to ingest a fast-export stream. This would be useful
-as a part of a pipeline, such as directly processing a repo converted with
-hg-fast-export.
+filter-repo exposes no way to ingest a custom fast-export stream without using
+it as a library. This would be useful as a part of a pipeline, such as directly
+processing a repo converted with hg-fast-export.
 
 ### Libraries
 
@@ -142,7 +177,7 @@ for viewing the changes hierarchically.
 My repo transformations are maintained over longer periods of time than the
 filter-repo was designed for, since it is intended for one-time scripts. I'd
 love to have an expressive DSL that can declare the steps in a repo
-transformation, similarly to reposurgeon.
+transformation, similarly to Reposurgeon.
 
 ### Rebase-like actions
 
@@ -273,3 +308,7 @@ the design considers round-tripping some forms of invalid objects. There are
 also likely several cases where git's parsing allows silently invalid inputs, as
 I've seen with error handling for the `strto*` functions in fast-import.
 fast-export streams can handle none of these variations.
+
+I would probably need to port git fast-export to transform-repo with extra
+attention to roundtripping all inputs, if I want to preserve atypical object
+formats.
