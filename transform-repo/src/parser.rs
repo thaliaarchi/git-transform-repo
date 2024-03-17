@@ -26,10 +26,10 @@ pub struct FastExportParser<'py, R: BufRead, W: Write> {
     input: R,
 
     /// A handle to the output file for the output we generate (we call dump on
-    /// many of the git elements we create).
+    /// many of the Git elements we create).
     output: W,
 
-    /// Callbacks for the various git elements.
+    /// Callbacks for the various Git elements.
     blob_callback: Option<&'py PyFunction>,
     commit_callback: Option<&'py PyFunction>,
     tag_callback: Option<&'py PyFunction>,

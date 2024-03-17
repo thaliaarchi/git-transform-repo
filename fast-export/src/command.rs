@@ -229,12 +229,12 @@ pub struct TagName<B> {
     pub name: B,
 }
 
-/// An error from validating that a branch has a valid format for git.
+/// An error from validating that a branch has a valid format for Git.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GitBranchNameError {}
 
 impl<B> Branch<B> {
-    /// Validates a branch name according to the git format.
+    /// Validates a branch name according to the Git format.
     ///
     // Corresponds to `check_refname_format` in refs.c (called by `new_branch`
     // in fast-import.c).

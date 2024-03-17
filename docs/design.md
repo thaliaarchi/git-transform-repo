@@ -137,8 +137,8 @@ When filter-repo is used in a pipeline, it is useful to produce a fast-export
 stream. Currently, this is possible through using `--dry-run` or `--debug` to
 get `.git/filter-repo/fast-export.original` and `fast-export.filtered`, but
 there seems to be no way of streaming it. Furthermore, these do not contain blob
-data, so a client would need to separately request it, such as with `git
-cat-file --batch`.
+data, so a client would need to separately request it, such as with
+`git cat-file --batch`.
 
 Producing a stream in some other format such as JSON would allow other tools to
 more easily operate on the data. Using jq and fq, in particular, would enable ad
@@ -151,10 +151,10 @@ usage is better left to it as a library, though.
 Printing to the console should be better controlled with verbosity levels and
 have more useful status information, redrawn with ANSI escape sequences.
 
-### Directly constructing git repos
+### Directly constructing Git repos
 
-What about directly constructing a git repo, instead of emitting a fast-export
-stream for git fast-import? What parts of git does fast-import use, that are not
+What about directly constructing a Git repo, instead of emitting a fast-export
+stream for git fast-import? What parts of Git does fast-import use, that are not
 its parsing? If the surface area is small, or replicable with libgit2, maybe I
 could have a more flexible library-driven import.
 
@@ -298,14 +298,14 @@ commits.
 
 ### Atypical object formats
 
-git object headers are parsed permissively, so there are multiple valid
-representations. For example, an impedance mismatch between git's and GitHub's
+Git object headers are parsed permissively, so there are multiple valid
+representations. For example, an impedance mismatch between Git's and GitHub's
 parsing of the author line, has led to a [vulnerability](https://iter.ca/post/gh-sig-pwn/).
-(If multiple author lines are provided, git uses only the first.) As another
+(If multiple author lines are provided, Git uses only the first.) As another
 example, some tools to [bruteforce vanity hashes](https://github.com/prasmussen/git-vanity-hash)
-use non-standard headers that git ignores. In the [hash function transition](https://git-scm.com/docs/hash-function-transition#_invalid_objects),
+use non-standard headers that Git ignores. In the [hash function transition](https://git-scm.com/docs/hash-function-transition#_invalid_objects),
 the design considers round-tripping some forms of invalid objects. There are
-also likely several cases where git's parsing allows silently invalid inputs, as
+also likely several cases where Git's parsing allows silently invalid inputs, as
 I've seen with error handling for the `strto*` functions in fast-import.
 fast-export streams can handle none of these variations.
 

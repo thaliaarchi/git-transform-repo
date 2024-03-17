@@ -79,7 +79,7 @@ the fast-import stream) and modified.
 
 ### Splitting files
 
-Since git has poor support for tracking cross-file textual moves, it may be
+Since Git has poor support for tracking cross-file textual moves, it may be
 desirable to split a file into many files through all of its history.
 
 I've wanted this for when I kept notes in a huge prepend-only Markdown file with
