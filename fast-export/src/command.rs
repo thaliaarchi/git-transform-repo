@@ -307,6 +307,7 @@ impl TryFrom<u16> for Mode {
 
 // TODO: The distinction between Objectish, Commitish, Blobish, and Treeish is
 // fuzzy.
+// TODO: Parse refs like `git check-ref-format`.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Objectish<B> {
