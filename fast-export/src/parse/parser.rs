@@ -558,6 +558,8 @@ impl<'a> PersonIdent<&'a [u8]> {
 
         // TODO: If none of the date formats allow `<` or `>`, I can give better
         // messages like "name contains '>'".
+        // `fsck_ident` in fsck.c verifies the ident format in commit and tag
+        // objects.
         let Some(lt) = ident.iter().position(|&b| matches!(b, b'<' | b'>')) else {
             return Err(ParseError::IdentNoLtOrGt.into());
         };

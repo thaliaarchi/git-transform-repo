@@ -29,6 +29,16 @@ LF-terminated string, and stores it in a buffer with a length.
 `strbuf`s, such as those created for unquoting strings with `unquote_c_style`,
 do not seem to free their buffers.
 
+## Other parsing
+
+`tree-walk.c:get_mode` does not check for integer overflow when shifting the
+mode `unsigned int`. `badDateOverflow` checks for integer overflow for dates, so
+this seems to be an oversight.
+
+fsck `badTimezone` could be loosened to only check that the timezone is digits
+and a separate new `badTimezoneLength` warning could detect those that do not
+have exactly 4 digits.
+
 ## Docs
 
 The `commit` command has an `encoding` sub-command, yet states this in the

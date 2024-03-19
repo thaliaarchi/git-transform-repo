@@ -1,7 +1,9 @@
-# Known `git fsck` violations
+# Strange and invalid Git object formats
+
+## `git fsck` reports
 
 A list of all error messages reported by `git fsck` and known violations of them
-in the wild. The messages are sourced from what is printed by [`fsck.c`](https://git.kernel.org/pub/scm/git/git.git/tree/fsck.c?id=3bd955d26919e149552f34aacf8a4e6368c26cec),
+in the wild. The messages are sourced from what fsck [prints](https://git.kernel.org/pub/scm/git/git.git/tree/fsck.c?id=3bd955d26919e149552f34aacf8a4e6368c26cec),
 rather than from [its documentation](https://git-scm.com/docs/git-fsck#_fsck_messages).
 
 - `badDate`: invalid author/committer line - bad date (ERROR, commit or tag)
@@ -27,10 +29,11 @@ rather than from [its documentation](https://git-scm.com/docs/git-fsck#_fsck_mes
     (edit changelog to mention about x_sendfile_header default change, 2011-08-29)
 
   Invalid time zones were [discussed](https://lore.kernel.org/git/CABPp-BFfa6q96qMUN07Dq3di6d3WuUzhyktBytbX=FGgarXgjg@mail.gmail.com/)
-  on the Git mailing list.
+  on the Git mailing list. More issues have been reported in
+  [newren/git-filter-repo#88](https://github.com/newren/git-filter-repo/issues/88).
 
-  GitHub's incoming fsck checks have allowed 6-digit time zones [since August
-  2011](https://lore.kernel.org/git/20200521185753.GB1308489@coredump.intra.peff.net/).
+  GitHub's incoming fsck checks have loosened this to allow time zones of any
+  length [since August 2011](https://lore.kernel.org/git/20200521195513.GA1542632@coredump.intra.peff.net/).
 
 - `badTree`: cannot be parsed as a tree (ERROR, tree)
 - `badTreeSha1`: invalid 'tree' line format - bad sha1 (ERROR, commit)
@@ -111,9 +114,24 @@ rather than from [its documentation](https://git-scm.com/docs/git-fsck#_fsck_mes
   create 0-prefixed tree modes. The fix was likely [3073a5c](https://github.com/mojombo/grit/commit/3073a5c70d8412e28b64c79fcba06061479a4642)
   (merge in tag listing fix, 2010-05-26).
 
-## Other
+## Strange object formats
+
+- Non-commit tags:
+
+  - torvalds/linux:
+    [v2.6.11-tree](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tag/?h=v2.6.11-tree)
+
+  Tags can point to objects other than commits. A Linux release from prior to
+  its Git history tags a tree. Blobs and tags can also be tagged.
+
+## Old object formats
 
 - Old-style date parsing:
 
-  Old-style date parsing was dropped in [89d21f4b64](https://git.kernel.org/pub/scm/git/git.git/commit/?id=89d21f4b649d5d31b18da3220608cb349f29e650)
+  Times used to first be parsed as seconds with `strtoul(buf, NULL, 10)` and
+  falling back to `strptime` with any of the formats `"%s"`, `"%c"`, or
+  `"%a %b %d %T %y"`, if it failed. The `strptime` fallbacks were removed in
+  [89d21f4b64](https://git.kernel.org/pub/scm/git/git.git/commit/?id=89d21f4b649d5d31b18da3220608cb349f29e650)
   (Move "parse_commit()" into common revision.h file, 2005-04-17).
+
+  It seems even with this change, time zones were not yet added.
