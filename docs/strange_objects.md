@@ -24,16 +24,21 @@ rather than from [its documentation](https://git-scm.com/docs/git-fsck#_fsck_mes
 - `badTagName`: invalid 'tag' name (INFO, tag)
 - `badTimezone`: invalid author/committer line - bad time zone (ERROR, commit or tag)
 
-  - rails/rails:
-    `1312735823 +051800` in [4cf94979c9](https://github.com/rails/rails/commit/4cf94979c9f4d6683c9338d694d5eb3106a4e734)
+  - rails/rails: `1312735823 +051800` in [4cf94979c9](https://github.com/rails/rails/commit/4cf94979c9f4d6683c9338d694d5eb3106a4e734)
     (edit changelog to mention about x_sendfile_header default change, 2011-08-29)
+  - psf/requests: `1313584730 +051800` in [5e6ecdad](https://github.com/psf/requests/commit/5e6ecdad9f69b1ff789a17733b8edc6fd7091bd8)
+    (Typo in documentation, 2011-09-08)
+  - `4559547106 -7349423` reported in [newren/git-filter-repo#88](https://github.com/newren/git-filter-repo/issues/88)
+  - `5859358690 -43455309` reported in newren/git-filter-repo#88
 
   Invalid time zones were [discussed](https://lore.kernel.org/git/CABPp-BFfa6q96qMUN07Dq3di6d3WuUzhyktBytbX=FGgarXgjg@mail.gmail.com/)
-  on the Git mailing list. More issues have been reported in
-  [newren/git-filter-repo#88](https://github.com/newren/git-filter-repo/issues/88).
+  on the Git mailing list.
 
-  GitHub's incoming fsck checks have loosened this to allow time zones of any
-  length [since August 2011](https://lore.kernel.org/git/20200521195513.GA1542632@coredump.intra.peff.net/).
+  GitHub's incoming fsck checks were loosened this to allow time zones of any
+  length [in August 2011](https://lore.kernel.org/git/20200521195513.GA1542632@coredump.intra.peff.net/).
+  Support for these time zones was added to git fast-import in [d42a2fb72f](https://git.kernel.org/pub/scm/git/git.git/commit/?id=d42a2fb72f8cbe6efd60a4f90c8e9ec1c888c3a7)
+  (fast-import: add new --date-format=raw-permissive format, 2020-05-30) [[mail](https://lore.kernel.org/git/pull.795.git.git.1590693313099.gitgitgadget@gmail.com/),
+  [PR](https://github.com/git/git/pull/795)].
 
 - `badTree`: cannot be parsed as a tree (ERROR, tree)
 - `badTreeSha1`: invalid 'tree' line format - bad sha1 (ERROR, commit)
