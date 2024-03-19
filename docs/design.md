@@ -106,17 +106,25 @@ as as a binary and library, it could be plugged in directly.
 
 Git has a few small utilities that generate fast-export streams for tars, zips,
 and versioned directories in [contrib/fast-import](https://git.kernel.org/pub/scm/git/git.git/tree/contrib/fast-import).
-These would be easy to replace.
+These would be easy to replace. [file-fast-export](https://github.com/bjj/file-fast-export)
+is also similar.
 
 ### Other VCSes
 
-It may be worth porting hg-fast-export for stability and control, as I ran into
-[a change](https://github.com/frej/fast-export/commit/4c10270302979f76d3bf143a2c3b3374c1b36e2c)
-which now produces different output from before for [some projects](https://github.com/thaliaarchi/repo-archival/commit/890abd5d36c1f5bfce81f5f884d42835f6e57e0e).
+It may be worth porting or contributing to hg-fast-export for stability and
+control. After [4c10270](https://github.com/frej/fast-export/commit/4c10270302979f76d3bf143a2c3b3374c1b36e2c)
+(Fix data handling, 2023-03-02), it now produces different output from before
+for [some projects](https://github.com/thaliaarchi/repo-archival/commit/890abd5d36c1f5bfce81f5f884d42835f6e57e0e).
 Although that change may have improved correctness for future conversions, it is
 now different from existing conversions that seem to have used the tool (or some
 other tool that happens to produce the same output). I usually work with old
 repos and need reproducibility.
+
+Reposurgeon supports a [large number of VCSes](https://gitlab.com/esr/reposurgeon/-/blob/master/surgeon/vcs.go).
+I should add support for these. More are [listed on Wikipedia](https://en.wikipedia.org/wiki/List_of_version-control_software).
+
+bzr-fastimport, cvs2svn (and its fast-import backend), and git-p4 were discussed
+when [bzr-fastimport was announced](https://lore.kernel.org/git/20080222073228.GF8410@spearce.org/).
 
 ### Remote machines
 
