@@ -41,3 +41,7 @@ fast-import docs:
 `rewrite-submodules-from`.
 
 Upstream consistent command/directive/line terminology.
+
+`fullPathname` for `git fsck` is [described](https://git-scm.com/docs/git-fsck#_fsck_messages)
+as “A path contains the full path starting with "/".”, but it checks for this
+with `has_full_path |= !!strchr(name, '/');` on the path of a tree entry.

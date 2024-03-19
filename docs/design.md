@@ -292,6 +292,8 @@ state:
 > linux.git repository completely, as it contains a tag referencing a tree
 > instead of a commit.
 
+(This tag is [v2.6.11-tree](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tag/?h=v2.6.11-tree).)
+
 However, it seems the `ls` fast-import command can reveal the oid of a tree made
 in a commit. With a list of all tags, filtered to those tagging trees,
 cross-referenced with commits that introduce those trees, you could obtain the
