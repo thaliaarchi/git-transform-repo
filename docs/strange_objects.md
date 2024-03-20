@@ -132,10 +132,35 @@ remote.
 - `nulInHeader`: unterminated header: NUL (FATAL, commit or tag)
 - `nullSha1`: contains entries pointing to null sha1 (WARN, tree)
 - `treeNotSorted`: not properly sorted (ERROR, tree)
+
+  git-cinnabar would [incorrectly convert](https://github.com/glandium/git-cinnabar/issues/228)
+  Mercurial repos containing paths with double slashes, which yield duplicate
+  paths and this error. This was fixed in [a473240c](https://github.com/glandium/git-cinnabar/commit/a473240c4de34fb90f45070c0c7dd5dbfcea9661)
+  (When creating changeset git trees from manifests, merge foo//\* into foo/*,
+  2019-10-10).
+
+  go-git [did not check](https://github.com/go-git/go-git/issues/193) that trees
+  were sorted when encoding until [go-git/go-git#967](https://github.com/go-git/go-git/pull/967)
+  [1d4bec0](https://github.com/go-git/go-git/commit/1d4bec06f4538a4f9f6000eaf5a17921dc1b5128)
+  (plumbing: object, check entry order in (*Tree).Encode, export
+  TreeEntrySorter, 2023-12-13).
+
+  GitPython would write incorrectly sorted trees until it was fixed in
+  [gitpython-developers/GitPython#1799](https://github.com/gitpython-developers/GitPython/pull/1799)
+  [365d44f5](https://github.com/gitpython-developers/GitPython/commit/365d44f50a3d72d7ebfa063b142d2abd4082cfaa)
+  (fix: treeNotSorted issue, 2024-01-15).
+
+  A commenter on a vague report of this error [hypothesizes](https://www.reddit.com/r/git/comments/wutlt7/comment/j1itdmy/)
+  that some `treeNotSorted` errors are related to `core.protectNTFS` problems
+  reported in [git-for-windows/git#2777](https://github.com/git-for-windows/git/issues/2777).
+
 - `unknownType`: unknown type (internal fsck error) (ERROR, unknown)
 - `unterminatedHeader`: unterminated header (FATAL, commit or tag)
 - `zeroPaddedDate`: invalid author/committer line - zero-padded date (ERROR, commit or tag)
 - `zeroPaddedFilemode`: contains zero-padded file modes (WARN, tree)
+
+  Usually this error is from the directory file mode being encoded as `040000`,
+  instead of `40000`.
 
   GitLab allowed this error for receive and fetch in [gitlab-org/gitaly#4051](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/4051),
   [db8f2e8da](https://gitlab.com/gitlab-org/gitaly/-/commit/db8f2e8da5e7ff9cf84a99195481303016cd2138)
@@ -143,7 +168,7 @@ remote.
 
   [Grit](https://github.com/mojombo/grit), a Git implementation in Ruby used by
   GitHub, [used to](https://lore.kernel.org/git/20200521185753.GB1308489@coredump.intra.peff.net/)
-  create 0-padded file modes. The fix was likely [mojombo/grit 3073a5c](https://github.com/mojombo/grit/commit/3073a5c70d8412e28b64c79fcba06061479a4642)
+  write 0-padded tree modes until it was fixed in [mojombo/grit 3073a5c](https://github.com/mojombo/grit/commit/3073a5c70d8412e28b64c79fcba06061479a4642)
   (merge in tag listing fix, 2010-05-26).
 
   - [celery/celery](https://github.com/celery/celery): 2 trees
