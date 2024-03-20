@@ -5,18 +5,21 @@
 A list of all error messages reported by `git fsck` and known violations of them
 in the wild. The messages are sourced from what fsck [prints](https://git.kernel.org/pub/scm/git/git.git/tree/fsck.c?id=3bd955d26919e149552f34aacf8a4e6368c26cec),
 rather than from [its documentation](https://git-scm.com/docs/git-fsck#_fsck_messages).
+Searching for `remote: fatal: fsck error` can help find more examples of pushes
+that were rejected due to fsck errors when `receive.fsckObjects` is set on the
+remote.
 
 - `badDate`: invalid author/committer line - bad date (ERROR, commit or tag)
 - `badDateOverflow`: invalid author/committer line - date causes integer overflow (ERROR, commit or tag)
 - `badEmail`: invalid author/committer line - bad email (ERROR, commit or tag)
 - `badFilemode`: contains bad file modes (INFO, tree)
 
-  - git.git: 98 trees
-
   The full set of mode bits was recorded until [e44794706e](https://git.kernel.org/pub/scm/git/git.git/commit/?id=e44794706eeb57f2ee38ed1604821aa38b8ad9d2)
   (Be much more liberal about the file mode bits, 2005-04-16).
   Added to fsck in [42ea9cb286](https://git.kernel.org/pub/scm/git/git.git/commit/?id=42ea9cb286423c949d42ad33823a5221182f84bf)
   (Be more careful about tree entry modes, 2005-05-05).
+
+  - git.git: 98 trees
 
 - `badName`: invalid author/committer line - bad name (ERROR, commit or tag)
 - `badObjectSha1`: invalid 'object' line format - bad sha1 (ERROR, tag)
@@ -24,21 +27,28 @@ rather than from [its documentation](https://git-scm.com/docs/git-fsck#_fsck_mes
 - `badTagName`: invalid 'tag' name (INFO, tag)
 - `badTimezone`: invalid author/committer line - bad time zone (ERROR, commit or tag)
 
+  Invalid time offsets were [discussed](https://lore.kernel.org/git/CABPp-BFfa6q96qMUN07Dq3di6d3WuUzhyktBytbX=FGgarXgjg@mail.gmail.com/)
+  on the Git mailing list.
+
+  GitHub's incoming fsck checks were loosened this to allow time offsets of any
+  length [in August 2011](https://lore.kernel.org/git/20200521195513.GA1542632@coredump.intra.peff.net/).
+  Support for these offsets was added to git fast-import in [d42a2fb72f](https://git.kernel.org/pub/scm/git/git.git/commit/?id=d42a2fb72f8cbe6efd60a4f90c8e9ec1c888c3a7)
+  (fast-import: add new --date-format=raw-permissive format, 2020-05-30) [[mail](https://lore.kernel.org/git/pull.795.git.git.1590693313099.gitgitgadget@gmail.com/),
+  [PR](https://github.com/git/git/pull/795)].
+
+  GitLab allowed this error for receive in [gitlab-org/gitaly#1947](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/1947)
+  [0f0c64816](https://gitlab.com/gitlab-org/gitaly/-/commit/0f0c64816f772efe5ddcd5b72b84a413979700e3)
+  (git: receivepack: Allow commits with invalid timezones to be pushed,
+  2020-03-19) and fetch in [gitlab-org/gitaly#3458](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/3458)
+  [692a0d347](https://gitlab.com/gitlab-org/gitaly/-/commit/692a0d3476a5fe5832ec78df5a6d9d5e1d780364)
+  (git: Always check fetched objects for consistency, 2021-05-03).
+
   - rails/rails: `1312735823 +051800` in [4cf94979c9](https://github.com/rails/rails/commit/4cf94979c9f4d6683c9338d694d5eb3106a4e734)
     (edit changelog to mention about x_sendfile_header default change, 2011-08-29)
   - psf/requests: `1313584730 +051800` in [5e6ecdad](https://github.com/psf/requests/commit/5e6ecdad9f69b1ff789a17733b8edc6fd7091bd8)
     (Typo in documentation, 2011-09-08)
   - `4559547106 -7349423` reported in [newren/git-filter-repo#88](https://github.com/newren/git-filter-repo/issues/88)
   - `5859358690 -43455309` reported in newren/git-filter-repo#88
-
-  Invalid time zones were [discussed](https://lore.kernel.org/git/CABPp-BFfa6q96qMUN07Dq3di6d3WuUzhyktBytbX=FGgarXgjg@mail.gmail.com/)
-  on the Git mailing list.
-
-  GitHub's incoming fsck checks were loosened this to allow time zones of any
-  length [in August 2011](https://lore.kernel.org/git/20200521195513.GA1542632@coredump.intra.peff.net/).
-  Support for these time zones was added to git fast-import in [d42a2fb72f](https://git.kernel.org/pub/scm/git/git.git/commit/?id=d42a2fb72f8cbe6efd60a4f90c8e9ec1c888c3a7)
-  (fast-import: add new --date-format=raw-permissive format, 2020-05-30) [[mail](https://lore.kernel.org/git/pull.795.git.git.1590693313099.gitgitgadget@gmail.com/),
-  [PR](https://github.com/git/git/pull/795)].
 
 - `badTree`: cannot be parsed as a tree (ERROR, tree)
 - `badTreeSha1`: invalid 'tree' line format - bad sha1 (ERROR, commit)
@@ -80,6 +90,13 @@ rather than from [its documentation](https://git-scm.com/docs/git-fsck#_fsck_mes
 - `missingNameBeforeEmail`: invalid author/committer line - missing space before email (ERROR, commit or tag)
 - `missingObject`: invalid format - expected 'object' line (ERROR, tag)
 - `missingSpaceBeforeDate`: invalid author/committer line - missing space before date (ERROR, commit or tag)
+
+  GitLab allowed this error for receive and fetch in [gitlab-org/gitaly#3640](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/3640)
+  [2da0b3939](https://gitlab.com/gitlab-org/gitaly/-/commit/2da0b393998d394b743c70e7cf9cd0757a8f2733)
+  (git: Accept commits and tags with malformed signatures, 2021-07-01), because
+  the most common case is where the date is missing completely, which they can
+  handle parsing.
+
 - `missingSpaceBeforeEmail`: invalid author/committer line - missing space before email (ERROR, commit or tag)
 - `missingTag`: invalid format - unexpected end after 'type' line (ERROR, tag)
 - `missingTagEntry`: invalid format - expected 'tag' line (ERROR, tag)
@@ -112,22 +129,30 @@ rather than from [its documentation](https://git-scm.com/docs/git-fsck#_fsck_mes
 - `zeroPaddedDate`: invalid author/committer line - zero-padded date (ERROR, commit or tag)
 - `zeroPaddedFilemode`: contains zero-padded file modes (WARN, tree)
 
-  - rails/rails: 141 trees
+  GitLab allowed this error for receive and fetch in [gitlab-org/gitaly#4051](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/4051),
+  [db8f2e8da](https://gitlab.com/gitlab-org/gitaly/-/commit/db8f2e8da5e7ff9cf84a99195481303016cd2138)
+  (git: Ignore fsck errors for zero-padded filemodes, 2021-11-09).
 
-  [Grit](https://github.com/mojombo/grit) (Git implementation in Ruby used by
-  GitHub) [used to](https://lore.kernel.org/git/20200521185753.GB1308489@coredump.intra.peff.net/)
-  create 0-prefixed tree modes. The fix was likely [3073a5c](https://github.com/mojombo/grit/commit/3073a5c70d8412e28b64c79fcba06061479a4642)
+  [Grit](https://github.com/mojombo/grit), a Git implementation in Ruby used by
+  GitHub, [used to](https://lore.kernel.org/git/20200521185753.GB1308489@coredump.intra.peff.net/)
+  create 0-padded file modes. The fix was likely [mojombo/grit 3073a5c](https://github.com/mojombo/grit/commit/3073a5c70d8412e28b64c79fcba06061479a4642)
   (merge in tag listing fix, 2010-05-26).
+
+  - [celery/celery](https://github.com/celery/celery): 2 trees
+  - [ddnet/ddnet](https://github.com/ddnet/ddnet): 6 trees
+  - [ohmyzsh/ohmyzsh](https://github.com/ohmyzsh/ohmyzsh): 3 trees
+  - [rails/rails](https://github.com/rails/rails): 141 trees
+  - [teeworlds/teeworlds](https://github.com/teeworlds/teeworlds): 6 trees
 
 ## Strange object formats
 
 - Non-commit tags:
 
-  - torvalds/linux:
-    [v2.6.11-tree](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tag/?h=v2.6.11-tree)
-
   Tags can point to objects other than commits. A Linux release from prior to
   its Git history tags a tree. Blobs and tags can also be tagged.
+
+  - torvalds/linux:
+    [v2.6.11-tree](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tag/?h=v2.6.11-tree)
 
 ## Old object formats
 
@@ -139,4 +164,4 @@ rather than from [its documentation](https://git-scm.com/docs/git-fsck#_fsck_mes
   [89d21f4b64](https://git.kernel.org/pub/scm/git/git.git/commit/?id=89d21f4b649d5d31b18da3220608cb349f29e650)
   (Move "parse_commit()" into common revision.h file, 2005-04-17).
 
-  It seems even with this change, time zones were not yet added.
+  It seems even with this change, time offsets had not yet been added.
