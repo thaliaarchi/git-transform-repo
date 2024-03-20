@@ -27,14 +27,22 @@ remote.
 - `badTagName`: invalid 'tag' name (INFO, tag)
 - `badTimezone`: invalid author/committer line - bad time zone (ERROR, commit or tag)
 
-  Invalid time offsets were [discussed](https://lore.kernel.org/git/CABPp-BFfa6q96qMUN07Dq3di6d3WuUzhyktBytbX=FGgarXgjg@mail.gmail.com/)
-  on the Git mailing list.
+  `git commit` (via `parse_date_basic`) rejects timezone offsets with not
+  exactly 4 digits as of [ee646eb48f](https://git.kernel.org/pub/scm/git/git.git/commit/?id=ee646eb48f9a7fc6c225facf2b7449a8a65ef8f2)
+  (date.c: Support iso8601 timezone formats, 2011-09-09) [[mail](https://lore.kernel.org/git/1315320996-1997-1-git-send-email-lihaitao@gmail.com/)],
+  released in v1.7.6.5 (2011-12-13). Before then, if an external source passed
+  an invalid offset to `git commit`, it would accept it; it is unclear if the
+  origin of the `+051800` offset was internal or external, though.
 
-  GitHub's incoming fsck checks were loosened this to allow time offsets of any
-  length [in August 2011](https://lore.kernel.org/git/20200521195513.GA1542632@coredump.intra.peff.net/).
-  Support for these offsets was added to git fast-import in [d42a2fb72f](https://git.kernel.org/pub/scm/git/git.git/commit/?id=d42a2fb72f8cbe6efd60a4f90c8e9ec1c888c3a7)
+  Support for invalid timezone offsets was added to git fast-import in
+  [d42a2fb72f](https://git.kernel.org/pub/scm/git/git.git/commit/?id=d42a2fb72f8cbe6efd60a4f90c8e9ec1c888c3a7)
   (fast-import: add new --date-format=raw-permissive format, 2020-05-30) [[mail](https://lore.kernel.org/git/pull.795.git.git.1590693313099.gitgitgadget@gmail.com/),
-  [PR](https://github.com/git/git/pull/795)].
+  [PR](https://github.com/git/git/pull/795)]. Invalid timezone offsets were
+  [discussed](https://lore.kernel.org/git/CABPp-BFfa6q96qMUN07Dq3di6d3WuUzhyktBytbX=FGgarXgjg@mail.gmail.com/)
+  on the Git mailing list preceding that patch.
+
+  GitHub's incoming fsck checks were loosened this to allow timezone offsets of
+  any length [in August 2011](https://lore.kernel.org/git/20200521195513.GA1542632@coredump.intra.peff.net/).
 
   GitLab allowed this error for receive in [gitlab-org/gitaly#1947](https://gitlab.com/gitlab-org/gitaly/-/merge_requests/1947)
   [0f0c64816](https://gitlab.com/gitlab-org/gitaly/-/commit/0f0c64816f772efe5ddcd5b72b84a413979700e3)
@@ -164,4 +172,13 @@ remote.
   [89d21f4b64](https://git.kernel.org/pub/scm/git/git.git/commit/?id=89d21f4b649d5d31b18da3220608cb349f29e650)
   (Move "parse_commit()" into common revision.h file, 2005-04-17).
 
-  It seems even with this change, time offsets had not yet been added.
+  It seems even with this change, timezone offsets had not yet been added.
+
+## Object corruption
+
+- A bug with `git rebase -i --root` in 2.18.0 caused corruption in the `author`
+  header of the root commit. It was fixed in the [“sequencer: fix "rebase -i
+  --root" corrupting author header”](https://lore.kernel.org/git/20180730092929.71114-1-sunshine@sunshineco.com/)
+  patch series, merged in [1bc505b476](https://git.kernel.org/pub/scm/git/git.git/commit/?id=1bc505b4768e9e48592bebfff35e18c5277412da)
+  (Merge branch 'es/rebase-i-author-script-fix', 2018-08-17), and released in
+  2.19.0.

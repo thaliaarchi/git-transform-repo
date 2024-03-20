@@ -46,6 +46,11 @@ this would be useful for idents.
 For tags, `fsck_ident` should report “invalid tagger line” instead of “invalid
 author/committer line”.
 
+## Other
+
+The comment about potentially checking that timezone offsets are divisible by 15
+is wrong. Post a counterexample.
+
 ## Docs
 
 The `commit` command has an `encoding` sub-command, yet states this in the
@@ -57,7 +62,7 @@ fast-import docs:
 `feature` is missing `alias`, `rewrite-submodules-to`, and
 `rewrite-submodules-from`.
 
-Upstream consistent command/directive/line terminology.
+Upstream consistent command/directive/line terminology to docs, code, and tests.
 
 `fullPathname` for `git fsck` is [described](https://git-scm.com/docs/git-fsck#_fsck_messages)
 as “A path contains the full path starting with "/".”, but it checks for this
