@@ -2,17 +2,20 @@
 
 ## Interleaving repos
 
-- [a594ea5] 2009-02-17 filter-repo: ensure new files from spliced-in commits aren't dropped at merges
-- [dd5665b] 2009-02-21 filter-repo: handle adding interleaving commits from separate repositories
-- [7437d62] 2009-02-23 filter-repo: fix id renaming
-- [e7311b6] 2009-04-04 filter-repo: reinstate the id_offset
-- [8101682] 2019-01-07 filter-repo: allow chaining of RepoFilter instances
-- [72b69b3] 2019-01-08 filter-repo: support --source and --target options
-- [a5d4d70] 2018-11-05 filter-repo: add some testcases making use of filter-repo as a library
-- [a31a381] 2019-03-14 filter-repo: delete complex code
-- [7d42c20] 2019-05-31 filter-repo: limit splicing repos warning to test that splices repos
+git-filter-repo used to have support for interleaving repos, but it was removed
+due to its complexity. Here are the relevant commits:
 
-t/t9391/splice_repos.py demonstrates a limited case of splicing histories.
+- [a594ea5] (filter-repo: ensure new files from spliced-in commits aren't dropped at merges, 2009-02-17)
+- [dd5665b] (filter-repo: handle adding interleaving commits from separate repositories, 2009-02-21)
+- [7437d62] (filter-repo: fix id renaming, 2009-02-23)
+- [e7311b6] (filter-repo: reinstate the id_offset, 2009-04-04)
+- [8101682] (filter-repo: allow chaining of RepoFilter instances, 2019-01-07)
+- [72b69b3] (filter-repo: support --source and --target options, 2019-01-08)
+- [a5d4d70] (filter-repo: add some testcases making use of filter-repo as a library, 2018-11-05)
+- [a31a381] (filter-repo: delete complex code, 2019-03-14)
+- [7d42c20] (filter-repo: limit splicing repos warning to test that splices repos, 2019-05-31)
+
+`t/t9391/splice_repos.py` demonstrates a limited case of splicing histories.
 
 [a594ea5]: https://github.com/newren/git-filter-repo/commit/a594ea530abe42e1074eb59935e7599bb896fd4e
 [dd5665b]: https://github.com/newren/git-filter-repo/commit/dd5665b7ece15065196e1cc6168699aa75e3c6e3
