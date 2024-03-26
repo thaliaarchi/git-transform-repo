@@ -99,10 +99,7 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
     // Corresponds to `file_change_m` in fast-import.c.
     fn parse_file_modify(&'a self, args: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let (mode, rest) = split_at_space(args).ok_or(ParseError::NoSpaceAfterMode)?;
-        // SAFETY: `from_str_radix` operates on bytes and accepts only ASCII.
-        let mode = u16::from_str_radix(unsafe { str::from_utf8_unchecked(mode) }, 8)
-            .map_err(|_| ParseError::InvalidModeInt)?;
-        let mode = Mode::try_from(mode).map_err(|_| ParseError::InvalidMode)?;
+        let mode = Mode::parse(mode)?;
 
         let (data_ref, path) = split_at_space(rest).ok_or(ParseError::NoSpaceAfterDataRef)?;
         let data_ref = DataRef::parse(data_ref)?;
@@ -227,6 +224,28 @@ impl<'a> DataRef<&'a [u8]> {
             Ok(DataRef::Mark(Mark::parse(data_ref)?))
         } else {
             Ok(DataRef::Oid(data_ref))
+        }
+    }
+}
+
+impl Mode {
+    /// Parse a file mode string. Allows only canonical modes, with the
+    /// exception that files can be shortened to just their permission bits for
+    /// brevity. Leading zeros are allowed. This logic is specific to
+    /// fast-import.
+    ///
+    // Corresponds to part of `file_change_m` in fast-import.c.
+    fn parse(mode: &[u8]) -> PResult<Self> {
+        // SAFETY: `from_str_radix` operates on bytes and accepts only ASCII.
+        let mode = u16::from_str_radix(unsafe { str::from_utf8_unchecked(mode) }, 8)
+            .map_err(|_| ParseError::InvalidModeInt)?;
+        match mode {
+            0o100644 | 0o644 => Ok(Mode::File),
+            0o100755 | 0o755 => Ok(Mode::Exe),
+            0o120000 => Ok(Mode::SymLink),
+            0o160000 => Ok(Mode::GitLink),
+            0o040000 => Ok(Mode::Dir),
+            _ => Err(ParseError::InvalidMode.into()),
         }
     }
 }

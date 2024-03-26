@@ -276,6 +276,7 @@ pub struct OriginalOid<B> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u16)]
 pub enum Mode {
     File = 0o100644,
     Exe = 0o100755,
@@ -284,24 +285,27 @@ pub enum Mode {
     Dir = 0o040000,
 }
 
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq, Hash)]
-#[error("invalid mode")]
-pub struct InvalidMode;
-
-impl TryFrom<u16> for Mode {
-    type Error = InvalidMode;
-
-    // Corresponds to part of `file_change_m` in fast-import.c.
-    fn try_from(mode: u16) -> Result<Self, Self::Error> {
-        // TODO: Should this be public or is the logic specific to fast-import?
-        match mode {
-            0o100644 | 0o644 => Ok(Mode::File),
-            0o100755 | 0o755 => Ok(Mode::Exe),
-            0o120000 => Ok(Mode::SymLink),
-            0o160000 => Ok(Mode::GitLink),
-            0o040000 => Ok(Mode::Dir),
-            _ => Err(InvalidMode),
+impl Mode {
+    // Corresponds to `canon_mode` in object.h.
+    #[inline]
+    pub fn canonicalize(mode: u16) -> Self {
+        match mode & 0o170000 {
+            0o100000 => {
+                if mode & 0o100 != 0 {
+                    Mode::Exe
+                } else {
+                    Mode::File
+                }
+            }
+            0o120000 => Mode::SymLink,
+            0o040000 => Mode::Dir,
+            _ => Mode::GitLink,
         }
+    }
+
+    #[inline]
+    pub fn is_canon(mode: u16) -> bool {
+        Mode::canonicalize(mode) as u16 == mode
     }
 }
 
