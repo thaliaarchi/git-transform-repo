@@ -126,6 +126,16 @@ I should add support for these. More are [listed on Wikipedia](https://en.wikipe
 bzr-fastimport, cvs2svn (and its fast-import backend), and git-p4 were discussed
 when [bzr-fastimport was announced](https://lore.kernel.org/git/20080222073228.GF8410@spearce.org/).
 
+In “A History of Source Control Management Systems”, David Soria Parra writes a
+history of version control systems. The [first part](https://experimentalworks.net/posts/2024-03-18-a-history-of-vcs-part1/)
+[[HN](https://news.ycombinator.com/item?id=39950712)] covers SCCS and RCS.
+Further parts have not yet been published.
+
+BitKeeper documents the [SCCS weave](https://www.bitkeeper.org/src-notes/SCCSWEAVE.html)
+format, since they use it. Now that their forge bkbits.net is offline, a
+BitKeeper clone of BitKeeper needs to be assembled from [an archive](https://users.bitkeeper.org/t/looking-for-a-complete-bk-repo-of-bk-source/1194)
+of sources uploaded by the maintainers.
+
 ### Remote machines
 
 It could be useful to export a repo on one machine, wrap it in some transport
