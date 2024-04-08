@@ -180,6 +180,16 @@ stream for git fast-import? What parts of Git does fast-import use, that are not
 its parsing? If the surface area is small, or replicable with libgit2, maybe I
 could have a more flexible library-driven import.
 
+## Trailers
+
+When producing derived repos, such as ones converted from another VCS or an
+extracted subtree, the provenance of the commits should be recorded in commit
+trailers. For example, use the `Extracted-from:` trailer for subtrees and the
+`Synthesized-from:` trailer for generated content derived from another source. I
+have used `Source:` in the past for all such tracking, but it should be more
+specific. This process should be built-in and automatic, not left to the filter
+writer.
+
 ## Repo diffs
 
 I usually use filter-repo in an iterative process, refining the resulting repo,
@@ -193,6 +203,8 @@ after a rebase.
 A text format like git log would be easy to throw together, once the diff
 mechanics are worked out, but a GUI with editor integration would be very useful
 for viewing the changes hierarchically.
+
+Evaluate to what extent git range-diff satisfies these requirements.
 
 ## Transformation DSL
 
