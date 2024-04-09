@@ -16,6 +16,9 @@ files to a subdirectory, then their histories are interleaved to produce a
 unified history. Files wouldn't conflict between the input repos, but it comes
 with all the caveats mentioned in related [filter-repo commits](./filter-repo.md#interleaving-repos).
 
+I think [git-subrepo](https://github.com/ingydotnet/git-subrepo/tree/master)
+uses this approach.
+
 ### Use case: Overlapping files (releases)
 
 Repos that are constructed for the same project, but which have different ranges
