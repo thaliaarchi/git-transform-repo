@@ -96,7 +96,7 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
         change.map(Some)
     }
 
-    // Corresponds to `file_change_m` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:file_change_m`.
     fn parse_file_modify(&'a self, args: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let (mode, rest) = split_at_space(args).ok_or(ParseError::NoSpaceAfterMode)?;
         let mode = Mode::parse(mode)?;
@@ -117,7 +117,7 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
         }))
     }
 
-    // Corresponds to `file_change_d` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:file_change_d`.
     fn parse_file_delete(&'a self, path: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let path = self
             .unquote_eol(path)
@@ -125,19 +125,19 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
         Ok(Change::from(FileDeleteChange { path }))
     }
 
-    // Corresponds to `file_change_cr(s, b, 1)` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:file_change_cr(s, b, 1)`.
     fn parse_file_rename(&'a self, paths: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let (source, dest) = self.parse_file_rename_copy(paths)?;
         Ok(Change::from(FileRenameChange { source, dest }))
     }
 
-    // Corresponds to `file_change_cr(s, b, 0)` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:file_change_cr(s, b, 0)`.
     fn parse_file_copy(&'a self, paths: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let (source, dest) = self.parse_file_rename_copy(paths)?;
         Ok(Change::from(FileCopyChange { source, dest }))
     }
 
-    // Corresponds to `file_change_cr` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:file_change_cr`.
     fn parse_file_rename_copy(&'a self, paths: &'a [u8]) -> PResult<(&'a [u8], &'a [u8])> {
         let (source, dest) = self
             .unquote_space(paths)
@@ -149,12 +149,12 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
         Ok((source, dest))
     }
 
-    // Corresponds to `file_change_deleteall` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:file_change_deleteall`.
     fn parse_file_delete_all(&'a self) -> PResult<Change<&'a [u8]>> {
         Ok(Change::FileDeleteAll)
     }
 
-    // Corresponds to `note_change_n` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:note_change_n`.
     fn parse_note_modify(&'a self, args: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let (data_ref, commit) = split_at_space(args).ok_or(ParseError::NoSpaceAfterDataRef)?;
         let data_ref = DataRef::parse(data_ref)?;
@@ -165,13 +165,13 @@ impl<'a, R: BufRead> ChangeIter<'a, R> {
         Ok(Change::from(NoteModifyChange { data_ref, commit }))
     }
 
-    // Corresponds to `parse_ls(p, b)` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_ls(p, b)`.
     fn parse_ls(&'a self, args: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let (root, path) = parse_ls(self, args, true)?;
         Ok(Change::from(CommitLs { root, path }))
     }
 
-    // Corresponds to `parse_cat_blob` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_cat_blob`.
     fn parse_cat_blob(&'a self, data_ref: &'a [u8]) -> PResult<Change<&'a [u8]>> {
         let blob = Blobish::parse(data_ref)?;
         Ok(Change::from(CatBlob { blob }))
@@ -216,7 +216,7 @@ impl<R: BufRead> DirectiveParser<R> for ChangeIter<'_, R> {
 
 impl<'a> DataRef<&'a [u8]> {
     // Corresponds to parts of `file_change_m` and `note_change_n` in
-    // fast-import.c.
+    // `git.git/builtin/fast-import.c`.
     fn parse(data_ref: &'a [u8]) -> PResult<Self> {
         if data_ref == b"inline" {
             Ok(DataRef::Inline)
@@ -234,7 +234,7 @@ impl Mode {
     /// brevity. Leading zeros are allowed. This logic is specific to
     /// fast-import.
     ///
-    // Corresponds to part of `file_change_m` in fast-import.c.
+    // Corresponds to part of `git.git/builtin/fast-import.c:file_change_m`.
     fn parse(mode: &[u8]) -> PResult<Self> {
         // SAFETY: `from_str_radix` operates on bytes and accepts only ASCII.
         let mode = u16::from_str_radix(unsafe { str::from_utf8_unchecked(mode) }, 8)

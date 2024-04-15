@@ -236,8 +236,8 @@ pub enum GitBranchNameError {}
 impl<B> Branch<B> {
     /// Validates a branch name according to the Git format.
     ///
-    // Corresponds to `check_refname_format` in refs.c (called by `new_branch`
-    // in fast-import.c).
+    // Corresponds to `git.git/refs.c:check_refname_format` (called by
+    // `git.git/builtin/fast-import.c:new_branch`).
     pub fn validate_git(&self) -> Result<(), GitBranchNameError> {
         todo!()
     }
@@ -286,7 +286,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    // Corresponds to `canon_mode` in object.h.
+    // Corresponds to `git.git/object.h:canon_mode`.
     #[inline]
     pub fn canonicalize(mode: u16) -> Self {
         match mode & 0o170000 {

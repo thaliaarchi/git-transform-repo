@@ -214,7 +214,7 @@ impl<R: BufRead> Parser<R> {
     /// The parsed commands borrow from the parser's buffer, so need to be
     /// copied before calling `next` again to retain them.
     ///
-    // Corresponds to the loop in `cmd_fast_import` in fast-import.c.
+    // Corresponds to the loop in `git.git/builtin/fast-import.c:cmd_fast_import`.
     pub fn next(&mut self) -> PResult<Command<'_, &[u8], R>> {
         // Read the previous data stream, if the user didn't. Error if the user
         // only partially read the data stream.
@@ -263,7 +263,7 @@ impl<R: BufRead> Parser<R> {
         }
     }
 
-    // Corresponds to `parse_new_blob` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_new_blob`.
     fn parse_blob(&self) -> PResult<Command<'_, &[u8], R>> {
         let mark = self.parse_directive(b"mark ", Mark::parse)?;
         let original_oid = self.parse_directive(b"original-oid ", OriginalOid::parse)?;
@@ -282,7 +282,7 @@ impl<R: BufRead> Parser<R> {
         }))
     }
 
-    // Corresponds to `parse_new_commit` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_new_commit`.
     fn parse_commit<'a>(&'a self, branch: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         let branch = Branch::parse(branch)?;
         let mark = self.parse_directive(b"mark ", Mark::parse)?;
@@ -312,7 +312,7 @@ impl<R: BufRead> Parser<R> {
         }))
     }
 
-    // Corresponds to `parse_new_tag` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_new_tag`.
     fn parse_tag<'a>(&'a self, name: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         let name = TagName::parse(name)?;
         let mark = self.parse_directive(b"mark ", Mark::parse)?;
@@ -337,7 +337,7 @@ impl<R: BufRead> Parser<R> {
         }))
     }
 
-    // Corresponds to `parse_reset_branch` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_reset_branch`.
     fn parse_reset<'a>(&'a self, branch: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         // TODO: Handle deletions and ref namespaces.
         let branch = Branch::parse(branch)?;
@@ -348,7 +348,7 @@ impl<R: BufRead> Parser<R> {
         Ok(Command::from(Reset { branch, from }))
     }
 
-    // Corresponds to `parse_ls(p, NULL)` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_ls(p, NULL)`.
     fn parse_ls<'a>(&'a self, args: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         let (root, path) = parse_ls(self, args, false)?;
         Ok(Command::from(Ls {
@@ -357,26 +357,26 @@ impl<R: BufRead> Parser<R> {
         }))
     }
 
-    // Corresponds to `parse_cat_blob` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_cat_blob`.
     fn parse_cat_blob<'a>(&'a self, data_ref: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         let blob = Blobish::parse(data_ref)?;
         Ok(Command::from(CatBlob { blob }))
     }
 
-    // Corresponds to `parse_get_mark` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_get_mark`.
     fn parse_get_mark<'a>(&'a self, mark: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         // TODO: :0 is not forbidden by fast-import. How would it behave?
         let mark = Mark::parse(mark)?;
         Ok(Command::from(GetMark { mark }))
     }
 
-    // Corresponds to `parse_checkpoint` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_checkpoint`.
     fn parse_checkpoint(&self) -> PResult<Command<'_, &[u8], R>> {
         self.input.skip_optional_lf()?;
         Ok(Command::Checkpoint)
     }
 
-    // Corresponds to `parse_alias` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_alias`.
     fn parse_alias(&self) -> PResult<Command<'_, &[u8], R>> {
         // TODO: This optional LF is at the start of the command in
         // fast-import.c, but at the end in the fast-import docs.
@@ -391,18 +391,18 @@ impl<R: BufRead> Parser<R> {
         Ok(Command::from(Alias { mark, to }))
     }
 
-    // Corresponds to `parse_progress` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_progress`.
     fn parse_progress<'a>(&'a self, message: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         self.input.skip_optional_lf()?;
         Ok(Command::from(Progress { message }))
     }
 
-    // Corresponds to `parse_feature` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_feature`.
     fn parse_feature<'a>(&'a self, feature: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         Ok(Command::from(Feature::parse(feature)?))
     }
 
-    // Corresponds to `parse_option` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_option`.
     fn parse_option<'a>(&'a self, option: &'a [u8]) -> PResult<Command<'a, &'a [u8], R>> {
         let option = if let Some(option) = option.strip_prefix(b"git ") {
             OptionCommand::Git(OptionGit::parse(option)?)
@@ -416,7 +416,7 @@ impl<R: BufRead> Parser<R> {
     /// fast-import reads commit and tag messages into memory with no size
     /// limit.
     ///
-    // Corresponds to `parse_data` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_data`.
     fn parse_data_small(&self) -> PResult<Option<&[u8]>> {
         let Some(header) = self.parse_directive(b"data ", DataHeader::parse)? else {
             return Ok(None);
@@ -453,7 +453,8 @@ impl From<StreamError> for io::Error {
 }
 
 impl<'a> Branch<&'a [u8]> {
-    // Corresponds to `lookup_branch` and `new_branch` in fast-import.c.
+    // Corresponds to `lookup_branch` and `new_branch` in
+    // `git.git/builtin/fast-import.c`.
     fn parse(branch: &'a [u8]) -> PResult<Self> {
         if branch.contains(&b'\0') {
             return Err(ParseError::BranchContainsNul.into());
@@ -465,7 +466,7 @@ impl<'a> Branch<&'a [u8]> {
 }
 
 impl<'a> TagName<&'a [u8]> {
-    // Corresponds to part of `parse_new_tag` in fast-import.c.
+    // Corresponds to part of `git.git/builtin/fast-import.c:parse_new_tag`.
     fn parse(name: &'a [u8]) -> PResult<Self> {
         if name.contains(&b'\0') {
             return Err(ParseError::TagContainsNul.into());
@@ -482,7 +483,8 @@ impl Mark {
     /// filter-repo does not check any errors for this integer. It allows `+`
     /// sign, parse errors, empty digits, and junk after the integer.
     ///
-    // Corresponds to `parse_mark` and `parse_mark_ref` in fast-import.c.
+    // Corresponds to `parse_mark` and `parse_mark_ref` in
+    // `git.git/builtin/fast-import.c`.
     #[inline]
     pub(super) fn parse(mark: &[u8]) -> PResult<Self> {
         let [b':', mark @ ..] = mark else {
@@ -495,7 +497,7 @@ impl Mark {
 }
 
 impl<'a> OriginalOid<&'a [u8]> {
-    // Corresponds to `parse_original_identifier` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_original_identifier`.
     #[inline]
     fn parse(original_oid: &'a [u8]) -> PResult<Self> {
         Ok(OriginalOid { oid: original_oid })
@@ -503,7 +505,7 @@ impl<'a> OriginalOid<&'a [u8]> {
 }
 
 impl<'a> Objectish<&'a [u8]> {
-    // Corresponds to `from` in `parse_new_tag` in fast-import.c.
+    // Corresponds to `from` in `git.git/builtin/fast-import.c:parse_new_tag`.
     fn parse(objectish: &'a [u8]) -> PResult<Self> {
         // Non-commits are allowed.
         if objectish.starts_with(b":") {
@@ -515,7 +517,8 @@ impl<'a> Objectish<&'a [u8]> {
 }
 
 impl<'a> Commitish<&'a [u8]> {
-    // Corresponds to `parse_objectish` and `parse_merge` in fast-import.c.
+    // Corresponds to `parse_objectish` and `parse_merge` in
+    // `git.git/builtin/fast-import.c`.
     pub(super) fn parse(commitish: &'a [u8]) -> PResult<Self> {
         // TODO: How much of `parse_objectish` should be here or in the
         // front-end?
@@ -525,7 +528,7 @@ impl<'a> Commitish<&'a [u8]> {
 }
 
 impl<'a> Blobish<&'a [u8]> {
-    // Corresponds to part of `parse_cat_blob` in fast-import.c.
+    // Corresponds to part of `git.git/builtin/fast-import:parse_cat_blob`.
     pub(super) fn parse(blobish: &'a [u8]) -> PResult<Self> {
         // TODO: Parse oids.
         if blobish.starts_with(b":") {
@@ -537,7 +540,7 @@ impl<'a> Blobish<&'a [u8]> {
 }
 
 impl<'a> Treeish<&'a [u8]> {
-    // Corresponds to `parse_treeish_dataref` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_treeish_dataref`.
     fn parse(treeish: &'a [u8]) -> PResult<Self> {
         // TODO: Parse oids.
         if treeish.starts_with(b":") {
@@ -549,7 +552,7 @@ impl<'a> Treeish<&'a [u8]> {
 }
 
 impl<'a> PersonIdent<&'a [u8]> {
-    // Corresponds to `parse_ident` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_ident`.
     fn parse(ident: &'a [u8]) -> PResult<Self> {
         // NUL may not appear in the name or email due to using `strcspn`.
         if ident.contains(&b'\0') {
@@ -595,7 +598,7 @@ impl<'a> PersonIdent<&'a [u8]> {
 }
 
 impl<'a> Encoding<&'a [u8]> {
-    // Corresponds to part of `parse_new_commit` in fast-import.c.
+    // Corresponds to part of `git.git/builtin/fast-import.c:parse_new_commit`.
     #[inline(always)]
     fn parse(encoding: &'a [u8]) -> PResult<Self> {
         if encoding.contains(&b'\0') {
@@ -610,7 +613,7 @@ impl<'a> DataHeader<&'a [u8]> {
     /// fast-import reads blobs into memory or switches to streaming when they
     /// exceed `--big-file-threshold` (default 512MiB).
     ///
-    // Corresponds to `parse_and_store_blob` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_and_store_blob`.
     fn parse(arg: &'a [u8]) -> PResult<Self> {
         if let Some(delim) = arg.strip_prefix(b"<<") {
             if delim == b"" {
@@ -627,7 +630,7 @@ impl<'a> DataHeader<&'a [u8]> {
 }
 
 impl<'a> Feature<&'a [u8]> {
-    // Corresponds to `parse_one_feature` in fast-import.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_one_feature`.
     fn parse(feature: &'a [u8]) -> PResult<Self> {
         if let Some(format) = feature.strip_prefix(b"date-format=") {
             Ok(Feature::DateFormat {
@@ -684,7 +687,7 @@ impl<'a> Feature<&'a [u8]> {
 }
 
 impl DateFormat {
-    // Corresponds to `option_date_format` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:option_date_format`.
     fn parse(format: &[u8]) -> PResult<Self> {
         match format {
             b"raw" => Ok(DateFormat::Raw),
@@ -697,7 +700,7 @@ impl DateFormat {
 }
 
 impl<'a> FastImportPath<&'a [u8]> {
-    // Corresponds to part of `make_fast_import_path` in fast-import.c.
+    // Corresponds to part of `git.git/builtin/fast-import.c:make_fast_import_path`.
     fn parse(path: &'a [u8]) -> PResult<Self> {
         if path.contains(&b'\0') {
             return Err(ParseError::PathContainsNul.into());
@@ -707,7 +710,7 @@ impl<'a> FastImportPath<&'a [u8]> {
     }
 }
 
-// Corresponds to `parse_ls` in fast-import.c.
+// Corresponds to `git.git/builtin/fast-import.c:parse_ls`.
 pub(super) fn parse_ls<'a, P: DirectiveParser<R>, R: BufRead + 'a>(
     parser: &'a P,
     args: &'a [u8],
@@ -741,7 +744,7 @@ pub(super) fn parse_ls<'a, P: DirectiveParser<R>, R: BufRead + 'a>(
     Ok((root, path))
 }
 
-// Corresponds to `option_rewrite_submodules` in fast-import.c.
+// Corresponds to `git.git/builtin/fast-import.c:option_rewrite_submodules`.
 fn parse_rewrite_submodules(args: &[u8]) -> PResult<(&[u8], &[u8])> {
     if args.contains(&b'\0') {
         return Err(ParseError::RewriteSubmodulesContainsNul.into());
@@ -755,7 +758,7 @@ fn parse_rewrite_submodules(args: &[u8]) -> PResult<(&[u8], &[u8])> {
 }
 
 impl<'a> OptionGit<&'a [u8]> {
-    // Corresponds to `parse_one_option` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:parse_one_option`.
     fn parse(option: &'a [u8]) -> PResult<Self> {
         if let Some(size) = option.strip_prefix(b"max-pack-size=") {
             Ok(OptionGit::MaxPackSize {

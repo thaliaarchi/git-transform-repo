@@ -19,7 +19,7 @@ impl BufPool {
     /// Unquotes a C-style string literal. Returns the string with escape
     /// sequences translated and the remainder of the input.
     ///
-    // Corresponds to `unquote_c_style` in quote.c.
+    // Corresponds to `git.git/quote.c:unquote_c_style`.
     pub fn unquote_c_style_string<'a>(
         &'a self,
         s: &'a [u8],

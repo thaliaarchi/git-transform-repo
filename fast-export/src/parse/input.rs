@@ -91,7 +91,7 @@ impl<R: BufRead> Input<R> {
     /// Reads a line from this input into `buf`, stripping the LF delimiter.
     /// Lines may contain any bytes (including NUL), except for LF.
     ///
-    // Corresponds to `strbuf_getline_lf` in strbuf.c.
+    // Corresponds to `git.git/strbuf.c:strbuf_getline_lf`.
     #[inline(always)]
     fn read_line<'a>(&mut self, buf: &'a mut Vec<u8>) -> io::Result<Option<&'a [u8]>> {
         debug_assert!(!self.eof, "already at EOF");
@@ -289,7 +289,7 @@ impl<R: BufRead> BufInput<R> {
     /// any comment lines that start with `#`. Lines may contain any bytes
     /// (including NUL), except for LF.
     ///
-    // Corresponds to `read_next_command` in fast-import.c.
+    // Corresponds to `git.git/builtin/fast-import.c:read_next_command`.
     fn read_directive(&self) -> io::Result<Option<&[u8]>> {
         let input = unsafe { &mut *self.input.get() };
         while !input.eof() {
