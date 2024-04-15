@@ -10,6 +10,8 @@ mod bytes;
 pub mod command;
 mod dump;
 pub mod parse;
+mod refs;
 
 pub use bytes::FromBytes;
 pub use dump::Dump;
+pub use refs::*;
