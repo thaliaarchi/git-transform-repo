@@ -1,18 +1,20 @@
+# Goal: Reconcile my and fast-import's grammars
+
 command ::=
     | blob
     | commit
     | tag
     | reset
+    | alias
     | ls
     | cat_blob
-    | "get-mark " mark_ref EOL
+    | "get-mark" SP mark_ref EOL
     | "checkpoint" EOL
     | "done" EOL
-    | alias
-    | "progress " NOT_LF_ONLY* LF? EOL
-    | "feature " feature EOL
-    | "option git " option_git EOL
-    | "option " NOT_LF* EOL
+    | "progress" SP NOT_LF_ONLY* LF? EOL
+    | "feature" SP feature EOL
+    | "option git" SP option_git EOL
+    | "option" SP NOT_LF* EOL
 
 blob ::=
     "blob" EOL
@@ -21,21 +23,20 @@ blob ::=
     data_large
 
 commit ::=
-    "commit " branch EOL
+    "commit" SP ref EOL
     mark?
     original_oid?
-    ("author " person_ident EOL)?
-    "committer " person_ident EOL
-    ("encoding " NOT_LF_NUL* EOL)?
+    ("author" SP person_ident EOL)?
+    "committer" SP person_ident EOL
+    ("encoding" SP NOT_LF* EOL)?
     data_small
-    ("from " commitish EOL)?
-    ("merge " commitish EOL)*
+    ("from" SP commitish EOL)?
+    ("merge" SP commitish EOL)*
     (file_modify | file_delete | file_rename | file_copy | note_modify |
         file_deleteall | commit_ls | cat_blob)*
     LF?
-# BUG: Branch can contain NUL, but comparisons are NUL-terminated.
 # BUG: Empty branch is seemingly allowed.
-branch ::= NOT_LF_NUL*
+ref ::= NOT_LF*
 person_ident ::= (name " ")? "<" email "> " date
 # Empty name and email are seemingly allowed.
 name ::= [^<>\n\0]*
@@ -55,6 +56,7 @@ file_rename ::=
 file_copy ::=
     "C " change_path " " change_path_eol EOL
 note_modify ::=
+    # TODO: <path> is incorrect here. Reposurgeon also has this same issue: https://gitlab.com/esr/reposurgeon/-/blob/b1739ef8b9ee6b38230d9d2fede343352dca2d6e/surgeon/inner.go#L2458
     | "N " objectish " " path EOL
     | "N inline " path EOL
       data_large
@@ -81,12 +83,19 @@ tag ::=
     data_small
 # BUG: Name can contain NUL, but its copy is NUL-terminated.
 # BUG: Empty name is seemingly allowed.
-tag_name ::= NOT_LF_NUL
+tag_name ::= NOT_LF
 
 reset ::=
     "reset " branch EOL
     ("from " commitish EOL)?
     # BUG: fast-import docs include LF?, but fast-import.c doesn't seem to.
+
+alias ::=
+    # TODO: This optional LF is at the start of the command in fast-import.c,
+    # but at the end in the fast-import docs.
+    "alias" LF? EOL
+    mark
+    "to " commitish EOL
 
 ls ::=
     # This path is a quoted string when the first character is '"' and literal
@@ -95,20 +104,13 @@ ls ::=
 treeish ::= mark_ref | oid_hex
 oid_hex ::= …
 path_quoted ::= string
-path_unquoted ::= [^\"\n] NOT_LF_NUL*
+path_unquoted ::= [^\"\n] NOT_LF*
 # An escaped NUL is seemingly not valid.
 string ::= "\"" ([^"\\\0] | "\\" ([abfnrtv"\\] | [0-3][0-7][0-7]))* "\""
 
 cat_blob ::=
     "cat-blob " blobish EOL
 blobish ::= mark_ref | oid_hex
-
-alias ::=
-    # TODO: This optional LF is at the start of the command in fast-import.c,
-    # but at the end in the fast-import docs.
-    "alias" LF? EOL
-    mark
-    "to " commitish EOL
 
 # The mark is 0 when this line is omitted.
 mark ::= "mark " mark_ref EOL
@@ -130,7 +132,7 @@ data_counted ::=
 # BUG: The delimiter can be empty. The open delimiter may contain NUL, but the
 # closing delimiter may not.
 data_delimited ::=
-    "<<" (?<delim> NOT_LF_NUL*) LF
+    "<<" (?<delim> NOT_LF*) LF
     (NOT_LF* LF)*?
     \k<delim> LF
     LF?
@@ -162,10 +164,10 @@ feature ::=
     | "force"
     | "notes"
     | "ls"
-path ::= NOT_LF_NUL
+path ::= NOT_LF*
 submodule_rewrite ::= submodule_name ":" marks_file
 submodule_name ::= [^:\n\0]
-marks_file ::= NOT_LF_NUL
+marks_file ::= NOT_LF*
 
 # Time zone must be in the range -1400 to 1400, inclusive.
 date if --date-format=raw ::= date_raw
@@ -190,7 +192,7 @@ file_size ::= uint unit_factor
 
 EOL ::= LF COMMENTS
 COMMENTS ::= ("#" NOT_LF* (LF | EOF))*
+SP ::= " "
 LF ::= "\n"
-NOT_LF ::= [^\n\0] # TODO review all uses
+NOT_LF ::= [^\n\0]
 NOT_LF_ONLY ::= [^\n]
-NOT_LF_NUL ::= [^\n\0]
