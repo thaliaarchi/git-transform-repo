@@ -13,11 +13,6 @@ are the cases I've identified:
    `strto*`)
 4. Overrunning NUL
 
-### Path parsing
-
-Paths are parsed in four ways by fast-import and do not handle all parse errors.
-See [parsing discrepancies](./parsing_discrepancies.md).
-
 ### Truncating strings at NUL
 
 Many places do not fully consider NUL and assume they are working with regular,
