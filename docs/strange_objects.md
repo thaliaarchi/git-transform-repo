@@ -184,8 +184,12 @@ remote.
   Tags can point to objects other than commits. A Linux release from prior to
   its Git history tags a tree. Blobs and tags can also be tagged.
 
+  - AutoHotkey/AutoHotkey:
+    [v2.0-a078](https://github.com/AutoHotkey/AutoHotkey/tree/v2.0-a078)
+    points to a tag
   - torvalds/linux:
     [v2.6.11-tree](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tag/?h=v2.6.11-tree)
+    points to a tree
 
 ## Old object formats
 
