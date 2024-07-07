@@ -4,8 +4,11 @@ A successor to git-filter-repo for advanced repo transformations.
 
 ## Upstream improvements
 
-Work on git-transform-repo has driven improvements to Git:
+Work on git-transform-repo has driven improvements to Git and git-filter-repo:
 
+- git-filter-repo 2024-07-06
+  - [Cleanup callback scope](https://github.com/newren/git-filter-repo/pull/543)
+    ([1 commit](https://github.com/newren/git-filter-repo/commit/4c5ad09a14b1b88dd8bb49dcccbac6fd48c2df3c))
 - [Git 2.45.0](https://lore.kernel.org/git/xmqq8r0ww0sj.fsf@gitster.g/):
   - [fast-import: tighten parsing of paths](https://lore.kernel.org/git/20240322000304.76810-1-thalia@archibald.dev/)
     ([8 patches](https://git.kernel.org/pub/scm/git/git.git/commit/?id=050e3349792d182ba1fd1ba25135c99103d15ade))
